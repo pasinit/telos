@@ -9,6 +9,7 @@ Post-Phase-7K, the SSR Jinja layer is gone; this module serves only the
 JSON API and mounts the Svelte SPA's built ``dist/`` tree at ``/``.
 """
 import asyncio
+import json
 import logging
 import logging.handlers
 import os
@@ -46,6 +47,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from telos import Agent
 from telos.api.registry import AgentRegistry
 from telos.api.settings import Settings
+from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror
 from telos.housekeeper import HOUSEKEEPER_SLUG
 from telos.mailer import EmailConfig
 from telos.observability import OTelLogFormatter, init_tracing
@@ -420,8 +422,15 @@ async def lifespan(app: FastAPI):
     """
     if init_tracing(settings.otel_exporter_otlp_endpoint, settings.otel_service_name):
         FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
-    runner = RoutineRunner(_routine_store, _routine_executor.execute_with_email)
+    bridge = _cardea_bridge()
+    runner = RoutineRunner(
+        _routine_store,
+        _routine_executor.execute_with_email,
+        owned_elsewhere=bridge.mirrored if bridge and bridge.client.config.mode == "live" else None,
+    )
     runner.start()
+    if bridge is not None:
+        asyncio.create_task(_sync_cardea(bridge))  # noqa: RUF006
     app.state.routine_runner = runner
     _agent_runtime.routine_runner = runner
     # Nightly feedback cron shares the routine runner's AsyncIOScheduler so
@@ -451,6 +460,36 @@ async def lifespan(app: FastAPI):
         app.state.routine_runner = None
         _agent_runtime.routine_runner = None
         _background_scheduler.shutdown(wait=True)
+
+
+def _agent_tools(user_id: str, slug: str) -> list[str]:
+    meta = _registry.get(user_id, slug) or {}
+    tools = meta.get("tools") or []
+    return list(json.loads(tools) if isinstance(tools, str) else tools)
+
+
+def _cardea_bridge() -> RoutineMirror | None:
+    """Routine mirroring into Cardea, when ``TELOS_CARDEA_MODE`` is shadow or live."""
+    config = BridgeConfig.from_env()
+    if not config.enabled:
+        return None
+    if not config.url or not config.token_file:
+        log.error("TELOS_CARDEA_MODE=%s needs TELOS_CARDEA_URL and TELOS_CARDEA_TOKEN_FILE", config.mode)
+        return None
+    return RoutineMirror(CardeaClient(config), _routine_store.list_all_enabled, _agent_tools)
+
+
+async def _sync_cardea(bridge: RoutineMirror, every: float = 60.0) -> None:
+    """Keep Cardea triggers equal to mirrorable routines; edits converge within a minute."""
+    while True:
+        try:
+            outcomes = await asyncio.to_thread(bridge.sync)
+            changed = {k: v for k, v in outcomes.items() if v != "unchanged"}
+            if changed:
+                log.info("cardea routine sync: %s", changed)
+        except Exception:
+            log.exception("cardea routine sync failed")
+        await asyncio.sleep(every)
 
 
 app = FastAPI(title="telos-api", lifespan=lifespan)

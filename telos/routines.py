@@ -99,9 +99,16 @@ ExecuteCallback = Callable[[str, str, str, "Routine"], Awaitable[str]]
 class RoutineRunner:
     """Manages scheduled routine execution using APScheduler."""
 
-    def __init__(self, store: RoutineStore, execute_fn: ExecuteCallback) -> None:
+    def __init__(
+        self,
+        store: RoutineStore,
+        execute_fn: ExecuteCallback,
+        owned_elsewhere: Callable[[Routine], bool] | None = None,
+    ) -> None:
         self._store = store
         self._execute_fn = execute_fn
+        # True when another executor (Cardea, in live mode) runs this routine's slots.
+        self._owned_elsewhere = owned_elsewhere
         self._scheduler = AsyncIOScheduler(timezone=local_timezone())
         self._jobs: dict[str, Any] = {}  # routine_id -> job
         self._in_flight: set[str] = set()  # routine ids currently executing
@@ -233,6 +240,9 @@ class RoutineRunner:
             self.remove(routine.id)
             return
         routine = current
+        if self._owned_elsewhere is not None and self._owned_elsewhere(routine):
+            log.info("routine %s is executed by cardea — skipping local run", routine.id)
+            return
 
         # Single-flight: a routine already executing (a slow run overlapping
         # its own interval tick, or the ``start()`` catch-up path racing the
