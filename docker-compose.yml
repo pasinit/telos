@@ -63,7 +63,7 @@ services:
       RECORDATIO_SUBSCRIPTION_MODEL: ${CODEX_MODEL:-}
       RECORDATIO_AGENT_API_FALLBACK: "false"
       RECORDATIO_CODEX_HOME: /root/.codex-memento
-      RECORDATIO_EXTRACTION_MODEL: ${RECORDATIO_EXTRACTION_MODEL:-${MEMENTO_EXTRACTION_MODEL:-anthropic/claude-haiku-5-5}}
+      RECORDATIO_EXTRACTION_MODEL: ${RECORDATIO_EXTRACTION_MODEL:-anthropic/claude-haiku-5-5}
       RECORDATIO_ENTITY_JUDGE_PROVIDER: ${TELOS_SUBSCRIPTION_PROVIDER:-claude}
       # F2 hybrid (BM25 + embedding) memory retrieval (Recordatio#47; shipped
       # flag-gated). Live in prod since mid-June via a hand edit on the
@@ -77,12 +77,6 @@ services:
       # Host-local only: containers reach it over the compose network, and
       # Docker's published ports bypass ufw.
       - "127.0.0.1:8787:8787"
-    networks:
-      default:
-        # Pre-rename .env files still say MEMENTO_URL=http://memento:8787
-        # (prod did, and every routine failed on 2026-10-18).
-        aliases:
-          - memento
 
   telos:
     image: ${TELOS_IMAGE:-telos-telos}
@@ -201,8 +195,7 @@ services:
       - "443:443/udp"
     environment:
       PUBLIC_HOST: ${PUBLIC_HOST}
-      # Falls back to the pre-rename MEMENTO_PASSWORD_HASH until .env is updated.
-      RECORDATIO_PASSWORD_HASH: ${RECORDATIO_PASSWORD_HASH:-${MEMENTO_PASSWORD_HASH:-}}
+      RECORDATIO_PASSWORD_HASH: ${RECORDATIO_PASSWORD_HASH:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

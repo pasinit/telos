@@ -6,7 +6,6 @@ imports the singleton ``settings`` from :mod:`telos.api.app`.
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +23,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    recordatio_url: str = Field("http://localhost:8787", validation_alias=AliasChoices("recordatio_url", "memento_url"))  # memento_url: pre-rename name
+    recordatio_url: str = "http://localhost:8787"
     storage_root: Path = Path.home() / ".telos"
     host: str = "0.0.0.0"
     port: int = 7433
@@ -97,7 +96,7 @@ class Settings(BaseSettings):
     # "open in knowledge graph" link from the recalled-memories panel. The
     # internal ``recordatio_url`` (e.g. http://recordatio:8787) is unreachable from
     # the user's browser, so the link is omitted unless this is set.
-    recordatio_public_url: str = Field("", validation_alias=AliasChoices("recordatio_public_url", "memento_public_url"))  # memento_public_url: pre-rename name
+    recordatio_public_url: str = ""
     # Observability — see telos/observability.py. Empty endpoint = no-op
     # (no collector); set e.g. http://localhost:4317 for the local Jaeger
     # sidecar (`make jaeger`).
