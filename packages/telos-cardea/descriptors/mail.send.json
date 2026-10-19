@@ -1,0 +1,75 @@
+{
+  "tool": {
+    "name": "mail.send",
+    "title": "Send email",
+    "description": "Send one email through the deployment's SMTP relay (Brevo). The body is markdown or HTML. At most one email per recipient per run: a repeated call for the same recipient returns the first result.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Single recipient address."
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000,
+          "description": "Markdown or HTML body; a plain-text part is included."
+        }
+      },
+      "required": [
+        "to",
+        "subject",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "'sent', or the Brevo event observed on reconciliation."
+        }
+      },
+      "required": [
+        "message_id",
+        "to",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "mail.send",
+    "effect": "effect",
+    "timeout_seconds": 60,
+    "max_output_bytes": 4096,
+    "idempotency_scope": [
+      "/to"
+    ],
+    "reconciler": "mail.send.reconcile"
+  }
+}

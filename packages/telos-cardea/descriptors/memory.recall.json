@@ -1,0 +1,64 @@
+{
+  "tool": {
+    "name": "memory.recall",
+    "title": "Recall memory",
+    "description": "Search this agent's long-term memory (Recordatio) for facts from past conversations. Run one focused query per entity, e.g. an organisation, street or listing ID.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 10
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recordatio": {
+          "type": "object",
+          "description": "Recordatio's memory-search payload, passed through."
+        }
+      },
+      "required": [
+        "query",
+        "count",
+        "recordatio"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.recall",
+    "effect": "read",
+    "timeout_seconds": 60,
+    "max_output_bytes": 131072
+  }
+}

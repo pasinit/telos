@@ -3,7 +3,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 WEB := telos-web
 
-.PHONY: install test run recordatio venv lint-imports \
+.PHONY: install test run recordatio venv lint-imports cardea-ops-check \
         web-install web-dev web-build web-test web-check dev \
         docker-build docker-up docker-down docker-logs docker-restart deploy \
         shell prod-up caddy-logs caddy-reload recordatio-hash \
@@ -29,6 +29,12 @@ test:
 
 lint-imports:
 	$(VENV)/bin/lint-imports
+
+# Cardea operations package (packages/telos-cardea): own uv venv, never part of
+# the Telos app's dependencies. Add `uv sync --group cardea` there to validate
+# against the real (private) Cardea instead of the vendored copy.
+cardea-ops-check:
+	cd packages/telos-cardea && uv sync --locked && uv run --no-sync ruff check . && uv run --no-sync mypy && uv run --no-sync pytest -q -rs
 
 # Start a local Aspire dashboard (OTel collector + UI on :18888).
 # Once running, set ``export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317``

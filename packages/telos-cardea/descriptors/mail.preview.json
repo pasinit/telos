@@ -1,0 +1,74 @@
+{
+  "tool": {
+    "name": "mail.preview",
+    "title": "Preview email",
+    "description": "Shadow-mode stand-in for mail.send: validates the same arguments and reports what would be sent, without sending anything.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Single recipient address."
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000,
+          "description": "Markdown or HTML body; a plain-text part is included."
+        }
+      },
+      "required": [
+        "to",
+        "subject",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "preview": {
+          "const": true
+        },
+        "to": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preview",
+        "to",
+        "subject",
+        "message_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "mail.preview",
+    "effect": "read",
+    "timeout_seconds": 10,
+    "max_output_bytes": 4096
+  }
+}
