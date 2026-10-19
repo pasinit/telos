@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 
+# One deploy at a time: back-to-back merges queue instead of racing on the same
+# containers (two concurrent `compose up` runs fail on a container-name conflict).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
