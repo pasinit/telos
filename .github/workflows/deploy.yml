@@ -42,7 +42,10 @@ jobs:
           script: |
             set -e
             cd ~/recordatio && git pull --ff-only
-            cd ~/telos && git pull --ff-only
+            cd ~/telos
+            CADDYFILE_BEFORE=$(sha256sum Caddyfile 2>/dev/null | awk '{print $1}' || true)
+            git pull --ff-only
+            CADDYFILE_AFTER=$(sha256sum Caddyfile 2>/dev/null | awk '{print $1}' || true)
             export GITHUB_TOKEN=$(grep GITHUB_TOKEN .env 2>/dev/null | cut -d= -f2 || true)
             install -m 0644 deploy/telos-sandbox.apparmor /etc/apparmor.d/telos-sandbox
             apparmor_parser -r /etc/apparmor.d/telos-sandbox
@@ -52,3 +55,9 @@ jobs:
             fi
             docker compose build
             docker compose up -d --remove-orphans
+            # The Caddyfile is a file-level bind mount: when git pull replaces it
+            # (new inode) the running Caddy keeps the old config. Same fix as deploy.sh.
+            if [ "$CADDYFILE_BEFORE" != "$CADDYFILE_AFTER" ]; then
+              echo "Caddyfile changed: recreating caddy to refresh the bind mount"
+              docker compose up -d --no-deps --force-recreate caddy
+            fi
