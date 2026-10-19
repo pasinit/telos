@@ -77,6 +77,12 @@ services:
       # Host-local only: containers reach it over the compose network, and
       # Docker's published ports bypass ufw.
       - "127.0.0.1:8787:8787"
+      # Optional private-network listener for a remote memory-search caller (Cardea).
+      # Set RECORDATIO_VPC_LISTEN=<private-ip>:8787 in .env, together with
+      # RECORDATIO_RESTRICTED_NETWORKS / RECORDATIO_RECALL_KEY_SHA256 in Recordatio's
+      # .env so callers from that network can only search memories. The default
+      # binds a second loopback port, which changes nothing.
+      - "${RECORDATIO_VPC_LISTEN:-127.0.0.1:18787}:8787"
 
   telos:
     image: ${TELOS_IMAGE:-telos-telos}
