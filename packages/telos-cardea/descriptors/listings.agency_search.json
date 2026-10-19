@@ -1,0 +1,159 @@
+{
+  "tool": {
+    "name": "listings.agency_search",
+    "title": "Estate agent search",
+    "description": "Search one London estate agent's own website by area, surfacing agent-direct inventory that may not be on Rightmove or Zoopla. Filters apply exactly for Foxtons and best-effort elsewhere; unknown fields are kept. Coverage is never exhaustive.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "agency": {
+          "enum": [
+            "foxtons",
+            "dexters",
+            "chestertons",
+            "hamptons",
+            "marshandparsons",
+            "openrent",
+            "ashponsonby",
+            "kfh",
+            "portico",
+            "kayandco",
+            "parkheath"
+          ]
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "London area or postcode district, e.g. 'Marylebone', 'W2', 'NW1'."
+        },
+        "for_sale": {
+          "type": "boolean",
+          "default": false,
+          "description": "True for sale, false for rent (default). OpenRent is rentals-only."
+        },
+        "max_price": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monthly rent (GBP pcm) for lettings, or sale price for sales."
+        },
+        "min_beds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Minimum bedrooms."
+        },
+        "max_beds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Maximum bedrooms."
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5
+        },
+        "postcode_districts": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{1,2}[0-9]{1,2}[A-Za-z]?$"
+          },
+          "description": "Allowed postcode districts, e.g. W1, W2."
+        }
+      },
+      "required": [
+        "agency",
+        "location"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string"
+        },
+        "agency": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "results",
+            "no_matches",
+            "partial",
+            "unavailable"
+          ],
+          "description": "'unavailable' means coverage is missing, never zero inventory."
+        },
+        "search_url": {
+          "type": "string"
+        },
+        "listings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "total": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "caveat": {
+          "type": "string"
+        },
+        "pages_visited": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending_urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stop_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "site",
+        "status",
+        "search_url",
+        "listings"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "listings.agency_search",
+    "effect": "read",
+    "timeout_seconds": 150,
+    "max_output_bytes": 262144
+  }
+}

@@ -1,0 +1,52 @@
+name: telos-cardea
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/telos-cardea/**'
+      - 'telos/transport/browser/rightmove.py'
+      - 'telos/transport/browser/zoopla.py'
+      - 'telos/transport/browser/agencies.py'
+      - 'telos/domain/agencies.py'
+      - '.github/workflows/telos-cardea.yml'
+  pull_request:
+    paths:
+      - 'packages/telos-cardea/**'
+      - 'telos/transport/browser/rightmove.py'
+      - 'telos/transport/browser/zoopla.py'
+      - 'telos/transport/browser/agencies.py'
+      - 'telos/domain/agencies.py'
+      - '.github/workflows/telos-cardea.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.12 is Cardea's minimum; 3.13 is Telos's.
+        python: ['3.12', '3.13']
+    defaults:
+      run:
+        working-directory: packages/telos-cardea
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The `cardea` group (private repo) is not installed here; tests use the
+      # vendored descriptor validator. Run `uv sync --group cardea` locally for
+      # the real Cardea registry checks.
+      - name: Install
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Typecheck
+        run: uv run --no-sync mypy
+
+      - name: Test
+        run: uv run --no-sync pytest -q -rs

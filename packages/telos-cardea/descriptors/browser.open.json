@@ -1,0 +1,102 @@
+{
+  "tool": {
+    "name": "browser.open",
+    "title": "Open page",
+    "description": "Open a public URL in a headless browser and return its title, text content (paged by offset) and the links and buttons usable with browser.click.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "pattern": "^https?://"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Character offset; use next_offset from a previous result."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "interactive": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "href": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "total_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Pass as offset to browser.open to read further; null when complete."
+        },
+        "structured": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "content",
+        "interactive",
+        "total_chars",
+        "next_offset"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "browser.open",
+    "effect": "read",
+    "timeout_seconds": 120,
+    "max_output_bytes": 131072
+  }
+}

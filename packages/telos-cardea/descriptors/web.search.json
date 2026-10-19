@@ -1,0 +1,86 @@
+{
+  "tool": {
+    "name": "web.search",
+    "title": "Web search",
+    "description": "Search the web. Returns titles, URLs and snippets. 'unavailable' means coverage is missing, not that nothing exists.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "engine": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "results",
+            "no_results",
+            "unavailable"
+          ]
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "caveat": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine",
+        "status",
+        "results"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "web.search",
+    "effect": "read",
+    "timeout_seconds": 90,
+    "max_output_bytes": 65536
+  }
+}
