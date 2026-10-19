@@ -11,11 +11,6 @@
 		reverse_proxy recordatio:8787
 	}
 
-	# Old dashboard path from before the Memento -> Recordatio rename.
-	handle_path /memento/* {
-		redir * /recordatio{uri} 308
-	}
-
 	# Aspire dashboard. The app does not support a path base cleanly, so keep
 	# its native dashboard routes and gate them behind the same basic auth.
 	handle /otel* {
