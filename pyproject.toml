@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "telos"
-version = "1.1.106"
+version = "1.1.107"
 description = "Persistent, goal-oriented AI agents for any long-standing personal task"
 requires-python = ">=3.13"
 dependencies = [
