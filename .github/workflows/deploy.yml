@@ -1,0 +1,54 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump patch version
+        run: |
+          set -e
+          version=$(grep -oP '(?<=^version = ")[^"]+' pyproject.toml)
+          IFS=. read -r maj min pat <<< "$version"
+          new="$maj.$min.$((pat + 1))"
+          sed -i 's/^version = "'"$version"'"$/version = "'"$new"'"/' pyproject.toml
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add pyproject.toml
+          git commit -m "chore: bump version to $new [skip ci]"
+          # Pushes via the default GITHUB_TOKEN don't retrigger workflows,
+          # so this never recurses into another Deploy run.
+          git push origin main || { git pull --rebase origin main && git push origin main; }
+
+      - name: Deploy to DigitalOcean
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # Full image rebuilds (telos + Recordatio) exceed the action's 10m default.
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ~/recordatio && git pull --ff-only
+            cd ~/telos && git pull --ff-only
+            export GITHUB_TOKEN=$(grep GITHUB_TOKEN .env 2>/dev/null | cut -d= -f2 || true)
+            install -m 0644 deploy/telos-sandbox.apparmor /etc/apparmor.d/telos-sandbox
+            apparmor_parser -r /etc/apparmor.d/telos-sandbox
+            if docker compose config --services | grep -qx nightly-worker; then
+              install -m 0644 deploy/telos-nightly.apparmor /etc/apparmor.d/telos-nightly
+              apparmor_parser -r /etc/apparmor.d/telos-nightly
+            fi
+            docker compose build
+            docker compose up -d --remove-orphans

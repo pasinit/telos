@@ -1,0 +1,7 @@
+# Docker Desktop VMs without AppArmor. Never use this override on the Linux host.
+# Requires Docker Compose >=2.24.4 for !override.
+services:
+  telos:
+    security_opt: !override
+      - seccomp=unconfined
+      - no-new-privileges:true

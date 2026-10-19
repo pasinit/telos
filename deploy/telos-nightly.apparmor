@@ -1,0 +1,23 @@
+#include <tunables/global>
+
+# Dedicated coding worker only. Pair with cap_drop: ALL (only SETFCAP for UID mapping), read_only: true,
+# no-new-privileges, and no host/application-data mounts. Namespace mounts
+# are needed by Codex/bubblewrap; no capabilities are granted by this profile.
+profile telos-nightly flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  file,
+  network,
+  capability,
+  userns,
+  mount,
+  umount,
+  pivot_root,
+  signal (send, receive),
+  ptrace (read, trace) peer=telos-nightly,
+  deny /proc/sys/** wklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/{kcore,keys,timer_list,latency_stats,sched_debug} rwklx,
+  deny /proc/{acpi,asound}/** rwklx,
+  deny /sys/{firmware,devices/virtual/powercap}/** rwklx,
+  deny /sys/** wklx,
+}

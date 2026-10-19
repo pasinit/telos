@@ -1,0 +1,221 @@
+services:
+  # OTel collector + trace UI. Enabled in prod deploys and available locally
+  # with `--profile tracing`.
+  # Telos / Recordatio / Pontifex send OTLP/gRPC to localhost:4317 when run on
+  # the host, or to http://aspire:18889 from sibling Docker containers.
+  # Prefer `make aspire` for local trace inspection; `make jaeger` remains
+  # available as the minimal Jaeger all-in-one path. Run only one at a time
+  # because both bind OTLP ports 4317/4318.
+  aspire:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+    restart: unless-stopped
+    profiles: ["prod", "tracing"]
+    environment:
+      # Dashboard ports are host-loopback only; Caddy exposes selected frontend
+      # paths over HTTPS with basic auth.
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+      DASHBOARD__APPLICATIONNAME: "Telos"
+      # Browser OTLP CORS is intentionally narrow by default. Override
+      # OTEL_BROWSER_CORS_ALLOWED_ORIGINS only for trusted local/dev origins.
+      DASHBOARD__OTLP__CORS__ALLOWEDORIGINS: ${OTEL_BROWSER_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      DASHBOARD__OTLP__CORS__ALLOWEDHEADERS: ${OTEL_BROWSER_CORS_ALLOWED_HEADERS:-content-type,authorization,traceparent,tracestate}
+    ports:
+      - "127.0.0.1:18888:18888"  # web UI
+      - "127.0.0.1:4317:18889"   # OTLP gRPC
+      - "127.0.0.1:4318:18890"   # OTLP HTTP
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    restart: unless-stopped
+    profiles: ["tracing"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      # Local dev only. Production browser traces should POST to a controlled
+      # collector/proxy origin (for example a same-origin /otlp/v1/traces route),
+      # not to Jaeger with broad CORS.
+      COLLECTOR_OTLP_HTTP_CORS_ALLOWED_ORIGINS: ${OTEL_BROWSER_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      COLLECTOR_OTLP_HTTP_CORS_ALLOWED_HEADERS: ${OTEL_BROWSER_CORS_ALLOWED_HEADERS:-content-type,authorization,traceparent,tracestate}
+    ports:
+      - "127.0.0.1:16686:16686"  # web UI
+      - "127.0.0.1:4317:4317"    # OTLP gRPC
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
+
+  recordatio:
+    build:
+      context: ../recordatio
+      args:
+        GITHUB_TOKEN: ${GITHUB_TOKEN}
+    restart: unless-stopped
+    env_file: ../recordatio/.env
+    environment:
+      # The Claude Agent SDK's bundled CLI refuses bypassPermissions when
+      # running as root unless it knows it's containerized. The recordatio
+      # service always runs in Docker, so this is safe by construction.
+      IS_SANDBOX: "1"
+      # Per-message-gap watchdog for agent turns (Recordatio runner default
+      # 300s). Long research routines legitimately go silent for >5 min at
+      # the tail — e.g. composing a ~45k-char brief as one message or tool
+      # input — and 300s killed such turns minutes from completion (the
+      # 2026-07-31 jobber "timeout" failure). 900s still catches genuinely
+      # wedged turns, just 10 min later; only batch routines run that long.
+      RECORDATIO_AGENT_TIMEOUT_S: "900"
+      RECORDATIO_SUBSCRIPTION_PROVIDER: ${TELOS_SUBSCRIPTION_PROVIDER:-claude}
+      RECORDATIO_SUBSCRIPTION_MODEL: ${CODEX_MODEL:-}
+      RECORDATIO_AGENT_API_FALLBACK: "false"
+      RECORDATIO_CODEX_HOME: /root/.codex-memento
+      RECORDATIO_EXTRACTION_MODEL: ${RECORDATIO_EXTRACTION_MODEL:-${MEMENTO_EXTRACTION_MODEL:-anthropic/claude-haiku-5-5}}
+      RECORDATIO_ENTITY_JUDGE_PROVIDER: ${TELOS_SUBSCRIPTION_PROVIDER:-claude}
+      # F2 hybrid (BM25 + embedding) memory retrieval (Recordatio#47; shipped
+      # flag-gated). Live in prod since mid-June via a hand edit on the
+      # droplet; committed so the repo is the source of truth and deploys
+      # stop aborting on the dirty server tree.
+      RECORDATIO_F2_EMBEDDINGS: "1"
+    volumes:
+      - memento-data:/root/.agentmem
+      - codex-memento:/root/.codex-memento
+    ports:
+      # Host-local only: containers reach it over the compose network, and
+      # Docker's published ports bypass ufw.
+      - "127.0.0.1:8787:8787"
+    networks:
+      default:
+        # Pre-rename .env files still say MEMENTO_URL=http://memento:8787
+        # (prod did, and every routine failed on 2026-10-18).
+        aliases:
+          - memento
+
+  telos:
+    image: ${TELOS_IMAGE:-telos-telos}
+    # telos-api runs as PID 1 and never reaps orphaned Chromium processes;
+    # tini (Docker's init) reaps them so they don't pile up as zombies.
+    init: true
+    build:
+      context: .
+      args:
+        GITHUB_TOKEN: ${GITHUB_TOKEN}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Required by sandbox-runtime/bubblewrap when Telos itself runs inside
+      # Docker. The container still runs sandboxed commands through bwrap; this
+      # only permits the nested namespace setup bwrap needs.
+      SANDBOX_ENABLE_NESTED: "1"
+      TELOS_SUBSCRIPTION_PROVIDER: ${TELOS_SUBSCRIPTION_PROVIDER:-claude}
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      PONTIFEX_CODEX_HOME: /root/.codex-telos
+      NIGHTLY_WORKER_URL: ${NIGHTLY_WORKER_URL:-}
+      NIGHTLY_WORKER_WORKSPACE_ROOT: /nightly-work
+    cap_drop: [ALL]
+    cap_add: [SETFCAP]
+    security_opt:
+      - seccomp=unconfined
+      - no-new-privileges:true
+      - apparmor=telos-sandbox
+    volumes:
+      - nightly-work:/nightly-work
+      - telos-data:/root/.telos
+      - codex-telos:/root/.codex-telos
+      # Read-only source checkouts for the nightly improvement synthesizer —
+      # its code proposals must cite real files. ro by design: the
+      # synthesizer is proposals-only and must never write to the repos.
+      - .:/repos/telos:ro
+      - ../recordatio:/repos/recordatio:ro
+    ports:
+      - "7433:7433"
+    labels:
+      # Watched by the autoheal sidecar — it restarts this container whenever
+      # Docker marks it unhealthy (the /healthz check is defined in the
+      # Dockerfile). Plain compose does nothing on `unhealthy`, so a hung-but-
+      # alive telos sat dead for 13 days on 2026-08-26; autoheal closes that gap.
+      - "autoheal=true"
+    depends_on:
+      - recordatio
+
+  # Linux-only opt-in. Install deploy/telos-nightly.apparmor on the host first.
+  nightly-worker:
+    image: ${TELOS_IMAGE:-telos-telos}
+    profiles: ["nightly-worker"]
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "telos.services.nightly.worker:create_app", "--factory", "--host", "0.0.0.0", "--port", "7444"]
+    read_only: true
+    cap_drop: [ALL]
+    # Mapping UID 0 into bubblewrap's user namespace requires SETFCAP. The
+    # worker needs no SYS_ADMIN in the outer namespace.
+    cap_add: [SETFCAP]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+      - systempaths=unconfined
+      - apparmor=telos-nightly
+    pids_limit: 512
+    mem_limit: 1g
+    environment:
+      NIGHTLY_WORKER_TOKEN: ${NIGHTLY_WORKER_TOKEN:-}
+      NIGHTLY_WORKER_WORKSPACE_ROOT: /nightly-work
+      PONTIFEX_CODEX_HOME: /root/.codex-telos
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      IS_SANDBOX: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      GIT_AUTHOR_NAME: Telos nightly implementer
+      GIT_AUTHOR_EMAIL: nightly@telos.local
+      GIT_COMMITTER_NAME: Telos nightly implementer
+      GIT_COMMITTER_EMAIL: nightly@telos.local
+    tmpfs:
+      # Ephemeral CLI preferences/cache, including Claude OAuth mode.
+      - /root:rw,nosuid,nodev,noexec,size=64m
+      - /tmp:rw,nosuid,nodev,size=512m
+      - /outside:rw,nosuid,nodev,noexec,size=8m
+    volumes:
+      - nightly-work:/nightly-work
+      - codex-telos:/root/.codex-telos
+    # No published port, production-data mount, source mount, or Docker socket.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7444/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  autoheal:
+    # Restarts any container labelled autoheal=true that Docker reports
+    # unhealthy. Defence-in-depth behind the agency_search/fetcher timeouts: if
+    # the event loop ever wedges again, the healthcheck goes red and autoheal
+    # recycles the container within ~30s instead of it sitting dead for days.
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+      AUTOHEAL_START_PERIOD: "60"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["prod"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+      # Falls back to the pre-rename MEMENTO_PASSWORD_HASH until .env is updated.
+      RECORDATIO_PASSWORD_HASH: ${RECORDATIO_PASSWORD_HASH:-${MEMENTO_PASSWORD_HASH:-}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - telos
+      - recordatio
+
+volumes:
+  nightly-work:
+  codex-memento:
+  codex-telos:
+  memento-data:
+  telos-data:
+  caddy-data:
+  caddy-config:

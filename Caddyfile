@@ -1,0 +1,39 @@
+{$PUBLIC_HOST} {
+	# Recordatio dashboard, gated by basic auth — Recordatio itself has no
+	# authentication on /ui or /memories. Username is "recordatio";
+	# RECORDATIO_PASSWORD_HASH must be a bcrypt hash (generate with
+	# `make recordatio-hash PASS=...`). When the env var is missing or empty
+	# nobody can authenticate, which is a safe default.
+	handle_path /recordatio/* {
+		basic_auth {
+			recordatio {$RECORDATIO_PASSWORD_HASH}
+		}
+		reverse_proxy recordatio:8787
+	}
+
+	# Old dashboard path from before the Memento -> Recordatio rename.
+	handle_path /memento/* {
+		redir * /recordatio{uri} 308
+	}
+
+	# Aspire dashboard. The app does not support a path base cleanly, so keep
+	# its native dashboard routes and gate them behind the same basic auth.
+	handle /otel* {
+		basic_auth {
+			recordatio {$RECORDATIO_PASSWORD_HASH}
+		}
+		redir * /structuredlogs 302
+	}
+
+	@aspire path /structuredlogs* /traces* /metrics* /resources* /consolelogs* /logs* /exceptions* /api/telemetry* /_blazor* /_content/* /framework/* /css/* /js/* /Aspire.Dashboard.styles.css
+	handle @aspire {
+		basic_auth {
+			recordatio {$RECORDATIO_PASSWORD_HASH}
+		}
+		reverse_proxy aspire:18888
+	}
+
+	handle {
+		reverse_proxy telos:7433
+	}
+}

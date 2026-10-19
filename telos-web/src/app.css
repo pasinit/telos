@@ -1,0 +1,144 @@
+/*
+ * Telos global styles — ported verbatim from telos/ui/templates/base.html
+ * <style> block during the Phase 7A scaffold. Tailwind classes load from
+ * the CDN tag in index.html; this file only adds custom prose,
+ * sidebar, and PWA safe-area rules that Tailwind doesn't cover.
+ */
+
+.cursor::after {
+  content: '▋';
+  display: inline-block;
+  animation: blink 1s step-start infinite;
+  margin-left: 1px;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* HTML prose styles for agent responses — dark mode */
+.dark .agent-response h1, .dark .agent-response h2, .dark .agent-response h3 {
+  font-weight: 600; margin-top: 1em; margin-bottom: 0.4em; color: #f3f4f6;
+}
+.dark .agent-response h3 { color: #d1d5db; }
+.dark .agent-response strong { font-weight: 600; color: #f9fafb; }
+.dark .agent-response em { color: #d1d5db; }
+.dark .agent-response code { background: #1f2937; color: #a5b4fc; }
+.dark .agent-response pre { background: #1f2937; }
+.dark .agent-response th, .dark .agent-response td { border-color: #374151; }
+.dark .agent-response th { background: #1f2937; color: #e5e7eb; }
+.dark .agent-response td { color: #d1d5db; }
+.dark .agent-response a { color: #818cf8; }
+.dark .agent-response hr { border-color: #374151; }
+.dark .agent-response img { max-width: 100%; height: auto; border-radius: 8px; margin: 0.5em 0; }
+
+/* HTML prose styles for agent responses — light mode */
+.agent-response h1, .agent-response h2, .agent-response h3 {
+  font-weight: 600; margin-top: 1em; margin-bottom: 0.4em; color: #111827;
+}
+.agent-response h1 { font-size: 1.1em; }
+.agent-response h2 { font-size: 1em; }
+.agent-response h3 { font-size: 0.95em; color: #374151; }
+.agent-response p { margin-bottom: 0.6em; }
+.agent-response ul, .agent-response ol { padding-left: 1.2em; margin-bottom: 0.6em; }
+.agent-response li { margin-bottom: 0.25em; }
+.agent-response ul li { list-style-type: disc; }
+.agent-response ol li { list-style-type: decimal; }
+.agent-response strong { font-weight: 600; color: #111827; }
+.agent-response em { font-style: italic; color: #374151; }
+.agent-response code {
+  background: #f3f4f6; border-radius: 3px; padding: 0.1em 0.3em;
+  font-family: monospace; font-size: 0.85em; color: #4f46e5;
+}
+.agent-response pre {
+  background: #f3f4f6; border-radius: 6px; padding: 0.75em 1em;
+  overflow-x: auto; margin-bottom: 0.6em;
+}
+.agent-response pre code { background: none; padding: 0; }
+.agent-response table { border-collapse: collapse; margin-bottom: 0.6em; width: 100%; font-size: 0.85em; }
+.agent-response th, .agent-response td { border: 1px solid #d1d5db; padding: 0.4em 0.6em; text-align: left; }
+.agent-response th { background: #f3f4f6; font-weight: 600; color: #111827; }
+.agent-response td { color: #374151; }
+.agent-response a { color: #4f46e5; text-decoration: underline; }
+.agent-response hr { border-color: #d1d5db; margin: 0.75em 0; }
+.agent-response img { max-width: 100%; height: auto; border-radius: 8px; margin: 0.5em 0; }
+.agent-response *:first-child { margin-top: 0; }
+.agent-response *:last-child { margin-bottom: 0; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+
+/* Mobile sidebar */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    width: 16rem;
+    padding-top: env(safe-area-inset-top, 0);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-overlay {
+    display: none; position: fixed; top: 0; bottom: 0; left: 0; right: 0; z-index: 40;
+    background: rgba(0,0,0,0.5);
+  }
+  .sidebar-overlay.open { display: block; }
+  .mobile-header { display: flex !important; }
+}
+@media (min-width: 769px) {
+  .sidebar-overlay { display: none !important; }
+  .mobile-header { display: none !important; }
+}
+
+/* PWA safe area for iOS standalone mode */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Prevent iOS Safari from zooming when focusing inputs (font-size must be >= 16px) */
+@media (max-width: 768px) {
+  input, textarea, select { font-size: 16px !important; }
+}
+
+/* iOS Safari: 100vh is the *large* viewport (URL bar hidden), so body
+   outsizes the visible area while the bar animates in/out. Use 100dvh
+   (dynamic viewport height) where supported and let the body track the
+   actual visible area. Falls back to 100vh on older browsers. */
+body { height: 100vh; height: 100dvh; }
+
+/* Stop the messages container's rubber-band from propagating to the
+   document. Without this, an upward overscroll inside #messages can
+   briefly bounce the whole document and expose a black band at the
+   top of the screen. */
+#messages { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+/* Recalled-memories drawer — overlays the chat from the right edge.
+   Ported verbatim from telos/ui/templates/chat.html in PR 7E. Lives
+   in app.css instead of inline-on-page because the SPA mounts the
+   drawer once at the chat root rather than per-template-render. */
+.recalled-drawer-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; justify-content: flex-end;
+}
+.recalled-drawer-backdrop.hidden { display: none; }
+.recalled-drawer {
+  width: min(420px, 100%); height: 100%;
+  background: white; display: flex; flex-direction: column;
+  box-shadow: -10px 0 24px rgba(0, 0, 0, 0.2);
+}
+.dark .recalled-drawer { background: rgb(17, 24, 39); }
+.recalled-section { margin-top: 1rem; }
+.recalled-section h3 {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgb(107, 114, 128); margin-bottom: 0.4rem;
+}
+.recalled-item { padding: 0.5rem 0; border-bottom: 1px solid rgba(107, 114, 128, 0.15); }
+.recalled-item:last-child { border-bottom: 0; }
+.recalled-type-badge {
+  display: inline-block; padding: 1px 6px; margin-right: 6px;
+  border-radius: 4px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; background: rgba(99, 102, 241, 0.15);
+  color: rgb(129, 140, 248); font-family: ui-monospace, monospace;
+}

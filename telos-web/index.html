@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-white dark:bg-gray-950">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#030712" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <link rel="icon" id="favicon" href="/icon-dark.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <title>Telos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#6366f1', dark: '#4f46e5' },
+          },
+        },
+      },
+    };
+  </script>
+  <script>
+    // Pre-paint theme decision — must run before body paints to avoid a
+    // dark→light flash on load. Mirrors the inline script from the old
+    // base.html so installed PWAs see the same behaviour.
+    (function () {
+      const saved = localStorage.getItem('theme');
+      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (saved === 'dark' || (!saved && sysDark)) {
+        document.documentElement.classList.add('dark');
+      }
+      if (!saved) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+          if (!localStorage.getItem('theme')) {
+            document.documentElement.classList.toggle('dark', e.matches);
+          }
+        });
+      }
+    })();
+  </script>
+</head>
+<body class="bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-screen flex overflow-hidden safe-top safe-bottom">
+  <div id="app" class="contents"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

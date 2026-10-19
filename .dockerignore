@@ -1,0 +1,61 @@
+# Keep the Docker build context small. Anything the Dockerfile doesn't
+# `COPY` should be excluded here.
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python local dev
+.venv
+venv/
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Frontend artifacts — the Dockerfile builds them fresh inside the
+# image. Shipping the host's tree just inflates the build context.
+telos-web/node_modules
+telos-web/dist
+telos-web/dev-dist
+telos-web/.svelte-kit
+telos-web/.vite
+telos-web/coverage
+
+# Secrets — never ship into the image
+.env
+.env.*
+!.env.example
+duckdns-token.txt
+*.pem
+*.key
+
+# Local databases / state
+*.db
+storage/
+
+# Logs
+*.log
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+.cursorignore
+.cursorindexingignore
+
+# Docs (rebuilt on the doc site, not needed inside the runtime)
+docs/_build/
+
+# Team scratchpads (must never enter the image)
+.claude/

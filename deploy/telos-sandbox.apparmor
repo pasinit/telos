@@ -1,0 +1,23 @@
+#include <tunables/global>
+
+# Paired with cap_drop: ALL, SETFCAP for root UID mapping and no-new-privileges.
+# Bubblewrap mounts and network setup run in a child user namespace, not with
+# SYS_ADMIN or NET_ADMIN capabilities in the service's user namespace.
+profile telos-sandbox flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  file,
+  network,
+  capability,
+  userns,
+  mount,
+  umount,
+  pivot_root,
+  signal (send, receive),
+  ptrace (read, trace) peer=telos-sandbox,
+  deny /proc/sys/** wklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/{kcore,keys,timer_list,latency_stats,sched_debug} rwklx,
+  deny /proc/{acpi,asound}/** rwklx,
+  deny /sys/{firmware,devices/virtual/powercap}/** rwklx,
+  deny /sys/** wklx,
+}

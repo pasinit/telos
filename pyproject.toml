@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telos"
+version = "1.1.104"
+description = "Persistent, goal-oriented AI agents for any long-standing personal task"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.25.0",
+    "httpx>=0.27",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-logging>=0.48b0",
+    "pontifex[agent] @ git+https://github.com/pasinit/pontifex.git@6f1eb4f6ee6db046da79658fa3518cb6f9cbdb26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "import-linter>=2.0",
+]
+ui = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pymupdf>=1.24",
+    "python-dotenv>=1.0",
+    "pydantic-settings>=2.0",
+    "mistune>=3.0",
+    # Direct dep for telos.mcp.server (Phase 2 MCP tool host —
+    # FastMCP lives at ``mcp.server.fastmcp``). Also a transitive
+    # dep of ``toolregistry[mcp]``; pinning it here makes the
+    # dependency explicit at the host's call site.
+    # Cap <2: mcp 2.x renamed FastMCP -> MCPServer and moved the module, so a
+    # rebuild that pulled 2.x crash-looped telos on import (2026-09-08). This
+    # repo ships no lockfile, so the upper bound is the only guard against drift.
+    "mcp>=1.27,<2",
+    "toolregistry[mcp]",
+    "sandbox-runtime",
+    "apscheduler>=3.10",
+    # Standalone nightly-feedback analyst session (telos.services.nightly).
+    # In-process @tool MCP server + subscription-billed query(); same SDK
+    # Recordatio uses for the agent-serving path.
+    "claude-agent-sdk>=0.2.90",
+    "google-genai",
+    "ddgs>=7.0",
+    "html2text",
+    "curl_cffi",
+    "playwright",
+    "patchright",
+    "itsdangerous>=2.0",
+    "Pillow",
+    "beautifulsoup4",
+    "google-api-python-client>=2.140",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+]
+
+[project.scripts]
+telos-api = "telos.api.app:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["telos"]
+
+[tool.ruff]
+line-length = 150
+src = ["telos"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "TID"]
+ignore = [
+    "E402",  # module-level imports after load_dotenv() is intentional
+    "E501",  # long lines — tool descriptions and SQL are naturally long
+    "B008",  # FastAPI uses File(...) in defaults by design
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Banned-API placeholder — populated as we enforce the layered package
+# structure described in docs/architecture/REDESIGN.md §5.4.
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Each new entry should cite the layer rule it enforces.
+# Example (uncomment when domain/ exists):
+# "telos.transport".msg = "domain layer must not import transport directly — use a port"
+
+[tool.ruff.lint.isort]
+known-first-party = ["telos"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+# ── import-linter ─────────────────────────────────────────────────────
+# Enforces the layered architecture documented in
+# docs/architecture/REDESIGN.md §5.4. Layers (top → bottom):
+#   ui → services → {domain, transport} → core
+# Forbidden edges: domain → {transport, services, ui},
+#                  core  → anything in telos.*,
+#                  transport → {services, ui}.
+# Run via `make lint-imports`.
+[tool.importlinter]
+root_package = "telos"
+
+[[tool.importlinter.contracts]]
+name = "core must not import other telos layers"
+type = "forbidden"
+source_modules = ["telos.core"]
+forbidden_modules = [
+    "telos.domain",
+    "telos.transport",
+    "telos.services",
+    "telos.api",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain must not import transport, services, or ui"
+type = "forbidden"
+source_modules = ["telos.domain"]
+forbidden_modules = [
+    "telos.transport",
+    "telos.services",
+    "telos.api",
+]
+
+[[tool.importlinter.contracts]]
+name = "transport must not import services or ui"
+type = "forbidden"
+source_modules = ["telos.transport"]
+forbidden_modules = [
+    "telos.services",
+    "telos.api",
+]
