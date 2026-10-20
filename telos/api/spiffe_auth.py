@@ -10,7 +10,9 @@ audience and expiry checks are PyJWT's.
 The caller's SPIRE agent only answers ``FetchJWTBundles`` for a registered
 workload (or with ``allow_unauthenticated_verifiers = true`` in its config).
 """
+import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import Iterator
@@ -23,9 +25,15 @@ import jwt
 SVID_ALGORITHMS = frozenset({"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"})
 _FETCH_JWT_BUNDLES = "/SpiffeWorkloadAPI/FetchJWTBundles"
 
+log = logging.getLogger("telos.spiffe_auth")
+
 
 class BundleUnavailableError(RuntimeError):
     """The trust domain's JWT bundle could not be obtained; callers answer 503."""
+
+
+class NotReadyError(BundleUnavailableError):
+    """No bundle has been fetched yet (cold start, SPIRE agent not up); callers answer 503 fast."""
 
 
 class InvalidSvidError(ValueError):
@@ -88,17 +96,22 @@ class WorkloadApiKeys:
     The bundle is re-read after ``ttl`` seconds, or sooner when a token names an
     unknown key (SPIRE rotated its signing key), at most every ``min_refresh``
     seconds. A cached bundle keeps serving if a refresh fails, until it is twice
-    ``ttl`` old.
+    ``ttl`` old. After a failed fetch the next one waits ``retry_after`` seconds;
+    meanwhile, and while another thread is fetching, callers get the cache or an
+    immediate error instead of queueing behind ``timeout``-long fetches.
     """
 
-    def __init__(self, socket: str, trust_domain: str, *, ttl: float = 300.0, min_refresh: float = 30.0, timeout: float = 5.0) -> None:
+    def __init__(self, socket: str, trust_domain: str, *, ttl: float = 300.0, min_refresh: float = 30.0, timeout: float = 5.0,
+                 retry_after: float = 2.0) -> None:
         self._socket = socket
         self._trust_domain = trust_domain
         self._ttl = ttl
         self._min_refresh = min_refresh
         self._timeout = timeout
+        self._retry_after = retry_after
         self._keys: dict[str, jwt.PyJWK] = {}
         self._fetched_at = self._attempted_at = float("-inf")
+        self._last_error = ""
         self._lock = threading.Lock()
 
     def _fetch(self) -> dict[str, bytes]:
@@ -112,6 +125,14 @@ class WorkloadApiKeys:
 
     def _refresh(self) -> None:
         self._attempted_at = time.monotonic()
+        try:
+            self._load()
+            self._last_error = ""
+        except BundleUnavailableError as exc:
+            self._last_error = str(exc)
+            raise
+
+    def _load(self) -> None:
         try:
             bundles = self._fetch()
         except (grpc.RpcError, StopIteration, ValueError) as exc:
@@ -127,18 +148,44 @@ class WorkloadApiKeys:
         self._keys = {key.key_id: key for key in keys if key.key_id}
         self._fetched_at = self._attempted_at
 
-    def signing_key(self, kid: str) -> jwt.PyJWK | None:
+    @property
+    def ready(self) -> bool:
+        """A bundle has been fetched at least once."""
+        return self._fetched_at > float("-inf")
+
+    def warm(self) -> bool:
+        """Fetch the bundle now (blocking; run it off the event loop at startup). False on failure."""
         with self._lock:
+            try:
+                self._refresh()
+            except BundleUnavailableError as exc:
+                log.warning("SPIRE JWT bundle not available yet: %s", exc)
+                return False
+        return True
+
+    def _cached(self, kid: str) -> jwt.PyJWK | None:
+        if not self.ready:
+            raise NotReadyError(f"no JWT bundle fetched yet: {self._last_error or 'fetch in progress'}")
+        if time.monotonic() - self._fetched_at > 2 * self._ttl:
+            raise BundleUnavailableError(f"JWT bundle expired: {self._last_error or 'fetch in progress'}")
+        return self._keys.get(kid)
+
+    def signing_key(self, kid: str) -> jwt.PyJWK | None:
+        # Another thread mid-fetch: answer from the cache rather than queue behind it.
+        if not self._lock.acquire(timeout=self._timeout):
+            return self._cached(kid)
+        try:
             now = time.monotonic()
             stale = now - self._fetched_at > self._ttl
-            unknown = kid not in self._keys and now - self._attempted_at > self._min_refresh
-            if stale or unknown:
-                try:
+            unknown = kid not in self._keys
+            since = now - self._attempted_at
+            due = since > self._retry_after if self._last_error else stale or since > self._min_refresh
+            if (stale or unknown) and due:
+                with contextlib.suppress(BundleUnavailableError):
                     self._refresh()
-                except BundleUnavailableError:
-                    if now - self._fetched_at > 2 * self._ttl:
-                        raise
-            return self._keys.get(kid)
+            return self._cached(kid)
+        finally:
+            self._lock.release()
 
 
 class SvidVerifier:

@@ -29,11 +29,19 @@ Environment:
 - ``TELOS_INTERNAL_ALLOWED_SUB``: the only SPIFFE ID allowed to call.
 - ``TELOS_SPIFFE_ENDPOINT_SOCKET``: Workload API address (default
   ``unix:///run/spire/agent.sock``).
+- ``TELOS_INTERNAL_RECALL_TIMEOUT``: seconds the routine context waits for the
+  reserved memory recall before disclosing it as unavailable (default 15; Cardea
+  gives a context call 30 s in all).
+
+Each request logs one INFO line on ``telos.internal_cardea``: method, route
+template, caller SPIFFE ID, status, duration and error code; never query
+strings, bodies or path parameters.
 """
 import asyncio
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,8 +55,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from telos.api.spiffe_auth import BundleUnavailableError, InvalidSvidError, SvidVerifier, WorkloadApiKeys
+from telos.api.spiffe_auth import BundleUnavailableError, InvalidSvidError, NotReadyError, SvidVerifier, WorkloadApiKeys
 from telos.cardea_bridge import BridgeConfig, identifier, trigger_spec
 from telos.core.persistence import Database
 from telos.core.repos.property_candidates import PropertyCandidateRepo
@@ -74,6 +83,7 @@ DEFAULT_ALLOWED_SUB = "spiffe://cardea.internal/runtime/kernel"
 DEFAULT_WORKLOAD_SOCKET = "unix:///run/spire/agent.sock"
 MAX_IDEMPOTENCY_KEY = 128
 MAX_LEDGER_PAGE = 200
+DEFAULT_RECALL_TIMEOUT = 15.0
 
 _listing_url: TypeAdapter[HttpUrl] = TypeAdapter(HttpUrl)
 
@@ -90,6 +100,7 @@ class InternalApiDeps:
     verifier: SvidVerifier
     allowed_sub: str = DEFAULT_ALLOWED_SUB
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
+    recall_timeout: float = DEFAULT_RECALL_TIMEOUT
 
 
 @dataclass(frozen=True)
@@ -117,12 +128,48 @@ def _invalid(code: str, detail: Any) -> ApiError:
 async def _api_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, StarletteHTTPException)
     code = exc.code if isinstance(exc, ApiError) else "not_found" if exc.status_code == 404 else f"http_{exc.status_code}"
+    request.state.error_code = code
     return JSONResponse({"detail": exc.detail, "code": code}, status_code=exc.status_code, headers=exc.headers)
 
 
 async def _request_invalid(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
+    request.state.error_code = "invalid_request"
     return JSONResponse({"detail": jsonable_encoder(exc.errors()), "code": "invalid_request"}, status_code=422)
+
+
+class RequestLog:
+    """ASGI middleware: one INFO line per request, with no query string, body or path parameters."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.monotonic()
+        status = 500
+        state = scope.setdefault("state", {})
+
+        async def capture(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, capture)
+        except Exception:
+            state.setdefault("error_code", "internal_error")
+            raise
+        finally:
+            route = getattr(scope.get("route"), "path", None) or "unmatched"
+            log.info(
+                "internal cardea request method=%s route=%s sub=%s status=%d duration_ms=%d code=%s",
+                scope["method"], route, state.get("subject", "-"), status,
+                round((time.monotonic() - started) * 1000), state.get("error_code", "-"),
+            )
 
 
 def _slot_time(raw: str | None) -> datetime | None:
@@ -142,13 +189,14 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
 
     Error bodies are ``{"detail": ..., "code": ...}``; clients match on ``code``:
     401 ``missing_token`` / ``invalid_token``, 403 ``subject_not_allowed``,
-    503 ``bundle_unavailable``, 400 ``missing_scope``, 404 ``no_mirrored_routine`` /
+    503 ``not_ready`` (no trust bundle yet, e.g. right after a restart) /
+    ``bundle_unavailable``, 400 ``missing_scope``, 404 ``no_mirrored_routine`` /
     ``assessment_not_found`` / ``not_found``, 422 ``invalid_request`` (query/body
     shape), ``invalid_slot_time``, ``invalid_url``, ``invalid_idempotency_key``,
     ``invalid_assessment`` or ``ledger_rule``.
     """
 
-    async def authenticate(authorization: str | None = Header(default=None)) -> None:
+    async def authenticate(request: Request, authorization: str | None = Header(default=None)) -> None:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             raise ApiError(401, "missing_token", "Bearer JWT-SVID required", headers={"WWW-Authenticate": "Bearer"})
@@ -157,9 +205,13 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
         except InvalidSvidError as exc:
             log.warning("internal cardea API rejected a token: %s", exc)
             raise ApiError(401, "invalid_token", "Invalid JWT-SVID", headers={"WWW-Authenticate": "Bearer"}) from None
+        except NotReadyError as exc:
+            log.warning("internal cardea API not ready: %s", exc)
+            raise ApiError(503, "not_ready", "Trust bundle not loaded yet", headers={"Retry-After": "2"}) from None
         except BundleUnavailableError as exc:
             log.error("internal cardea API cannot validate tokens: %s", exc)
             raise ApiError(503, "bundle_unavailable", "Trust bundle unavailable", headers={"Retry-After": "10"}) from None
+        request.state.subject = subject
         if subject != deps.allowed_sub:
             log.warning("internal cardea API refused subject %s", subject)
             raise ApiError(403, "subject_not_allowed", "Subject not allowed")
@@ -195,7 +247,12 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
         slot = _slot_time(slot_header)
         invocation = RoutineInvocation(slot.astimezone(local_timezone()) if slot else local_now()).metadata()
         recipient = await asyncio.to_thread(deps.get_user_email, scope.user_id) if scope.history.exists() else None
-        recall = await reserved_recall(deps.recall_fn, scope.user_id, scope.agent_slug)
+        try:
+            recall = await asyncio.wait_for(reserved_recall(deps.recall_fn, scope.user_id, scope.agent_slug), deps.recall_timeout)
+        except TimeoutError:
+            # Cardea gives the whole context call 30 s; disclose the gap rather than time out.
+            log.warning("routine context recall for %s/%s timed out after %.0fs", scope.user_id, scope.agent_slug, deps.recall_timeout)
+            recall = {"records": [], "errors": [{"error": f"memory recall timed out after {deps.recall_timeout:.0f}s"}]}
         return {
             "invocation": {"reporting_date": invocation["reporting_date"], "timezone": invocation["timezone"],
                            "slot_time": slot.isoformat() if slot else None},
@@ -276,6 +333,7 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
     app.add_exception_handler(StarletteHTTPException, _api_error)
     app.add_exception_handler(RequestValidationError, _request_invalid)
     app.include_router(router)
+    app.add_middleware(RequestLog)
     return app
 
 
@@ -290,9 +348,12 @@ class _EmbeddedServer(uvicorn.Server):
 class InternalApiServer:
     """Runs the internal app on the current event loop next to the main server."""
 
-    def __init__(self, app: FastAPI, *, host: str, port: int = INTERNAL_PORT) -> None:
+    def __init__(self, app: FastAPI, *, host: str, port: int = INTERNAL_PORT, warm: Callable[[], object] | None = None) -> None:
         self._server = _EmbeddedServer(uvicorn.Config(app, host=host, port=port, lifespan="off", access_log=False, log_config=None))
         self._task: asyncio.Task | None = None
+        # Loads the trust bundle at startup so the first Cardea call does not pay for it.
+        self._warm = warm
+        self._warm_task: asyncio.Future | None = None
 
     @property
     def started(self) -> bool:
@@ -306,6 +367,8 @@ class InternalApiServer:
             log.error("internal cardea API failed to start on %s:%s", self._server.config.host, self._server.config.port)
 
     def start(self) -> None:
+        if self._warm is not None:
+            self._warm_task = asyncio.ensure_future(asyncio.to_thread(self._warm))
         self._task = asyncio.create_task(self._serve())
         log.info("internal cardea API listening on %s:%s", self._server.config.host, self._server.config.port)
 
@@ -337,6 +400,7 @@ def internal_api_from_env(
         verifier=SvidVerifier(keys, audience=AUDIENCE, trust_domain=TRUST_DOMAIN),
         allowed_sub=os.getenv("TELOS_INTERNAL_ALLOWED_SUB", DEFAULT_ALLOWED_SUB),
         bridge=BridgeConfig.from_env(),
+        recall_timeout=float(os.getenv("TELOS_INTERNAL_RECALL_TIMEOUT", str(DEFAULT_RECALL_TIMEOUT))),
     )
     host = os.getenv("TELOS_INTERNAL_API_HOST", "0.0.0.0")
-    return InternalApiServer(create_internal_app(deps), host=host)
+    return InternalApiServer(create_internal_app(deps), host=host, warm=keys.warm)
