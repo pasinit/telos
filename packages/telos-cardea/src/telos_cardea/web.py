@@ -16,6 +16,7 @@ from urllib.parse import SplitResult, urlsplit
 import httpx
 
 from telos_cardea._cardea import Arguments, OperationContext, Output
+from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 
 log = logging.getLogger(__name__)
@@ -140,7 +141,11 @@ async def search(arguments: Arguments, context: OperationContext, *, config: Con
     except SearchUnavailable as error:
         return {"engine": used, "status": "unavailable", "reason": str(error), "results": [],
                 "caveat": "Search coverage is unavailable; this is not evidence of absence."}
-    return {"engine": used, "status": "results" if hits else "no_results", "results": hits[:MAX_RESULTS]}
+    out, trimmed = fit({"engine": used, "status": "results" if hits else "no_results", "results": hits[:MAX_RESULTS]},
+                       ("list", "results"))
+    if trimmed:
+        out["caveat"] = f"Only the first {len(out['results'])} results fit the result size limit."
+    return out
 
 
 class _client:

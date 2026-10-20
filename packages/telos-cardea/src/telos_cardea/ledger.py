@@ -17,6 +17,7 @@ import httpx
 
 from telos_cardea import telos_api
 from telos_cardea._cardea import Arguments, OperationContext, Output, Reconciliation
+from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 
 MAX_PAGE = 200
@@ -31,7 +32,11 @@ async def list_(arguments: Arguments, context: OperationContext, *, config: Conf
     """Entry point ``ledger.list`` (read): one page of the agent's latest assessments."""
     params = {"offset": int(arguments.get("offset", 0)), "limit": min(int(arguments.get("limit", 50)), MAX_PAGE)}
     response = await telos_api.request(config or load_config(), context, "GET", "/ledger", params=params, client=client)
-    return telos_api.json_object(response)
+    out, trimmed = fit(telos_api.json_object(response), ("list", "items"))
+    if trimmed:
+        # The items left out are the next page's start.
+        out["next_offset"] = int(arguments.get("offset", 0)) + len(out["items"])
+    return out
 
 
 async def history(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -40,7 +45,10 @@ async def history(arguments: Arguments, context: OperationContext, *, config: Co
     params = {"url": str(arguments["url"]), "offset": int(arguments.get("offset", 0)),
               "limit": min(int(arguments.get("limit", MAX_HISTORY_PAGE)), MAX_HISTORY_PAGE)}
     response = await telos_api.request(config or load_config(), context, "GET", "/ledger/history", params=params, client=client)
-    return telos_api.json_object(response)
+    out, trimmed = fit(telos_api.json_object(response), ("list", "history"))
+    if trimmed:
+        out["next_offset"] = int(arguments.get("offset", 0)) + len(out["history"])
+    return out
 
 
 async def record(arguments: Arguments, context: OperationContext, *, config: Config | None = None,

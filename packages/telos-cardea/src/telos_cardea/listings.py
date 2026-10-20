@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from telos_cardea._cardea import Arguments, OperationContext, Output
 from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
 from telos_cardea._vendor.agency_types import AGENCY_LABELS, SearchFilters
+from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 from telos_cardea.fetch import Fetcher
 
@@ -21,6 +22,16 @@ UNAVAILABLE_CAVEAT = "Coverage unavailable; this is not evidence of zero invento
 AGENCY_SEARCH_TIMEOUT_S = 120.0
 # Inside the descriptors' 180 s: curl, unblocker and a browser render can each take a while.
 PORTAL_SEARCH_TIMEOUT_S = 150.0
+
+
+def _bounded(out: Output) -> Output:
+    """``out`` with trailing listings dropped until it fits Cardea's result cap, flagged when any are."""
+    fitted, trimmed = fit(out, ("list", "listings"), ("list", "pages_visited"), ("list", "warnings"))
+    if "listings" in trimmed:
+        fitted["truncated"] = True
+        fitted["caveat"] = (f"{fitted.get('caveat', '')} Only the first {len(fitted['listings'])} listings fit the result "
+                            "size limit; narrow the search (price, bedrooms, area) to see the rest.").strip()
+    return fitted
 
 
 def _unavailable(site: str, url: str, reason: str) -> Output:
@@ -108,7 +119,7 @@ def _results(site: str, url: str, structured: dict[str, Any] | None) -> Output |
         out["total"] = data["total"]
     if isinstance(data.get("truncated"), bool):
         out["truncated"] = data["truncated"]
-    return out
+    return _bounded(out)
 
 
 async def rightmove_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -201,7 +212,7 @@ async def onthemarket_search(arguments: Arguments, context: OperationContext, *,
     if total is not None:
         out["total"] = total
         out["truncated"] = len(listings) < total
-    return out
+    return _bounded(out)
 
 
 async def agency_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -235,6 +246,6 @@ async def agency_search(arguments: Arguments, context: OperationContext, *, conf
         return {**base, "status": "unavailable", "reason": reason, "listings": [], "caveat": UNAVAILABLE_CAVEAT}
     hits = [hit.to_dict() for hit in report.hits]
     status = "partial" if report.warnings or report.pending_urls else ("results" if hits else "no_matches")
-    return {**base, "status": status, "listings": hits, "pages_visited": report.pages_visited, "pending_urls": report.pending_urls,
-            "warnings": report.warnings, "stop_reason": report.stop_reason,
-            "caveat": "Not an exhaustive inventory check. Verify location, criteria and availability on detail pages."}
+    return _bounded({**base, "status": status, "listings": hits, "pages_visited": report.pages_visited,
+                     "pending_urls": report.pending_urls, "warnings": report.warnings, "stop_reason": report.stop_reason,
+                     "caveat": "Not an exhaustive inventory check. Verify location, criteria and availability on detail pages."})

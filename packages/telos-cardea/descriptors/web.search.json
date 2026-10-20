@@ -81,6 +81,6 @@
     "handler": "web.search",
     "effect": "read",
     "timeout_seconds": 90,
-    "max_output_bytes": 65536
+    "max_output_bytes": 61440
   }
 }

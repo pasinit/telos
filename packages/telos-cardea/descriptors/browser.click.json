@@ -98,6 +98,6 @@
     "handler": "browser.click",
     "effect": "read",
     "timeout_seconds": 120,
-    "max_output_bytes": 131072
+    "max_output_bytes": 61440
   }
 }

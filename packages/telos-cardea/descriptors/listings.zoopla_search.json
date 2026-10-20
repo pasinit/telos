@@ -117,6 +117,6 @@
     "handler": "listings.zoopla_search",
     "effect": "read",
     "timeout_seconds": 300,
-    "max_output_bytes": 262144
+    "max_output_bytes": 61440
   }
 }

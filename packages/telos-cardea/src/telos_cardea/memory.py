@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from telos_cardea._cardea import Arguments, OperationContext, OperationRejected, Output, agent_id
+from telos_cardea.bounded import fit
 from telos_cardea.config import Config, RecordatioScope, load_config
 
 _RESULT_KEYS = ("results", "hits", "memories", "units", "matches")
@@ -37,8 +38,14 @@ async def recall(arguments: Arguments, context: OperationContext, *, config: Con
         if isinstance(data.get(key), list):
             hits = data[key]
             break
-    # The payload shape is Recordatio's; pass it through so no recalled detail is lost.
-    return {"query": query, "count": len(hits), "recordatio": data}
+    # The payload shape is Recordatio's; pass it through so no recalled detail is lost,
+    # except the lowest-ranked hits when they would not fit Cardea's result cap.
+    out, trimmed = fit({"query": query, "count": len(hits), "recordatio": data}, *(("list", f"recordatio.{k}") for k in _RESULT_KEYS))
+    if trimmed:
+        kept = len(out["recordatio"][trimmed[0].split(".", 1)[1]])
+        out["recordatio"]["omitted"] = len(hits) - kept
+        out["count"] = kept
+    return out
 
 
 async def briefing(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -50,7 +57,8 @@ async def briefing(arguments: Arguments, context: OperationContext, *, config: C
     data = await _get(config, f"/v1/users/{scope.user_id}/briefing", params, client)
     if not isinstance(data.get("briefing"), str):
         raise RuntimeError("Recordatio returned an unrecognised briefing response")
-    return {"briefing": data["briefing"], "units": int(data.get("units", 0))}
+    out, _ = fit({"briefing": data["briefing"], "units": int(data.get("units", 0))}, ("text", "briefing"))
+    return out
 
 
 def _scope(config: Config, context: OperationContext) -> RecordatioScope:
