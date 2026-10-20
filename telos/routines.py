@@ -23,6 +23,7 @@ __all__ = [
     "RoutineStore",
     "RoutineRunner",
     "_format_interval",
+    "scope_note",
 ]
 
 log = logging.getLogger("telos.routines")
@@ -89,6 +90,29 @@ def _format_interval(seconds: int) -> str:
         return f"every {h} hour{'s' if h != 1 else ''}"
     d = seconds // 86400
     return f"every {d} day{'s' if d != 1 else ''}"
+
+
+def scope_note(routine: Routine, routines: list[Routine]) -> str:
+    """Fence one routine's run off from the agent's other enabled routines in ``routines``.
+
+    Routine turns see the agent's history and prior email deliveries,
+    which include the sibling routines' runs. Without a boundary the
+    agent treats those as part of its job and performs them too — homey
+    2026-10-14: both daily searches ran, and both emails went out, on
+    each of the two routine runs. Returns "" when there are no siblings.
+    """
+    siblings = [
+        r for r in routines
+        if r.id != routine.id and r.enabled and r.user_id == routine.user_id and r.agent_slug == routine.agent_slug
+    ]
+    if not siblings:
+        return ""
+    names = "\n".join(f"- {r.name or r.description.splitlines()[0][:120]}" for r in siblings)
+    return (
+        "\n\nScope of this run: perform ONLY the routine described above and send only its own email. "
+        "The following routines run separately on their own schedule; do not perform their searches "
+        "or send their emails in this run, even though their past runs appear in your history:\n" + names
+    )
 
 
 # Type for the callback that executes a routine against an agent
@@ -199,30 +223,13 @@ class RoutineRunner:
                  label, " (one-shot)" if routine.one_shot else "")
 
     def _scope_note(self, routine: Routine) -> str:
-        """Fence this run off from the agent's other routines.
-
-        Routine turns see the agent's history and prior email deliveries,
-        which include the sibling routines' runs. Without a boundary the
-        agent treats those as part of its job and performs them too — homey
-        2026-10-14: both daily searches ran, and both emails went out, on
-        each of the two routine runs.
-        """
+        """Fence this run off from the agent's other routines (see :func:`scope_note`)."""
         try:
-            siblings = [
-                r for r in self._store.list_for_agent(routine.user_id, routine.agent_slug)
-                if r.id != routine.id and r.enabled
-            ]
+            siblings = self._store.list_for_agent(routine.user_id, routine.agent_slug)
         except Exception:
             log.exception("sibling routine lookup failed for %s", routine.id)
             siblings = []
-        if not siblings:
-            return ""
-        names = "\n".join(f"- {r.name or r.description.splitlines()[0][:120]}" for r in siblings)
-        return (
-            "\n\nScope of this run: perform ONLY the routine described above and send only its own email. "
-            "The following routines run separately on their own schedule; do not perform their searches "
-            "or send their emails in this run, even though their past runs appear in your history:\n" + names
-        )
+        return scope_note(routine, siblings)
 
     async def _run_routine(self, routine: Routine) -> None:
         """Execute a routine against the agent."""
@@ -242,6 +249,9 @@ class RoutineRunner:
         routine = current
         if self._owned_elsewhere is not None and self._owned_elsewhere(routine):
             log.info("routine %s is executed by cardea — skipping local run", routine.id)
+            # Advance the run clock anyway: a stale ``last_run`` would make the
+            # ``start()`` catch-up re-run this slot locally after a rollback.
+            self._store.mark_run(routine.id)
             return
 
         # Single-flight: a routine already executing (a slow run overlapping

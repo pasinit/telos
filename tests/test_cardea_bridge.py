@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror, cron_for, trigger_spec
+from telos.cardea_bridge import GRACE_SECONDS, BridgeConfig, CardeaClient, RoutineMirror, cron_for, plan, trigger_spec
 from telos.core.repos.routines import Routine
 from telos.routines import RoutineRunner
 
@@ -31,6 +31,7 @@ def routine(**changes) -> Routine:
 
 
 TOOLS = ["rightmove_search", "agency_search", "send_email", "create_routine"]
+LIVE = BridgeConfig(mode="live", url="https://c", token_file="t", allow_drop=frozenset({"create_routine"}))
 
 
 @pytest.mark.parametrize(
@@ -50,7 +51,7 @@ def test_cron_mapping(changes, expected):
 
 
 def test_live_spec_exposes_mapped_operations_and_expects_one_email():
-    spec = trigger_spec(routine(), TOOLS, BridgeConfig(mode="live", url="https://c", token_file="t"))
+    spec = trigger_spec(routine(), TOOLS, LIVE)
     assert spec is not None
     template = spec["template"]
     assert spec["trigger_id"] == "telos.73103f92fad9" and spec["schedule"] == "30 8 * * *"
@@ -100,7 +101,7 @@ def test_sync_installs_routines_and_removes_stale_triggers(tmp_path: Path):
     token = tmp_path / "jwt"
     token.write_text("svid-token\n")
     fake = FakeCardea()
-    config = BridgeConfig(mode="live", url="https://cardea.internal:8443", token_file=str(token))
+    config = BridgeConfig(mode="live", url="https://cardea.internal:8443", token_file=str(token), allow_drop=frozenset({"create_routine"}))
     mirror = RoutineMirror(
         CardeaClient(config, transport=httpx.MockTransport(fake.handler)),
         lambda: [routine(), routine(id="local-only", one_shot=True)],
@@ -130,3 +131,261 @@ async def test_runner_skips_routines_owned_by_cardea(tmp_path: Path):
     runner_local = RoutineRunner(store, execute)
     await runner_local._run_routine(created)  # noqa: SLF001
     assert calls == [created.id]
+
+
+def test_live_spec_has_misfire_grace_and_no_idempotency_context():
+    spec = trigger_spec(routine(), TOOLS, LIVE)
+    assert spec is not None
+    assert spec["misfire"] == "grace" and spec["grace_seconds"] == GRACE_SECONDS == 3 * 3600
+    assert "idempotency_context" not in spec["template"] and "context" not in spec["template"]
+
+
+def test_live_refuses_unmapped_tools_unless_allowed():
+    strict = BridgeConfig(mode="live", url="https://c", token_file="t")
+    refused = plan(routine(), TOOLS, strict)
+    assert refused.spec is None and "create_routine" in refused.reason and refused.dropped == ("create_routine",)
+    assert plan(routine(), TOOLS, LIVE).spec is not None
+
+
+def test_shadow_mirrors_with_dropped_tools_listed_in_instructions():
+    mirror = plan(routine(), TOOLS, BridgeConfig(mode="shadow"))
+    assert mirror.spec is not None and mirror.dropped == ("create_routine",)
+    instructions = mirror.spec["template"]["instructions"]
+    assert "Not available in this run (do not try to use them): create_routine." in instructions
+
+
+def test_per_routine_mode_overrides_global(monkeypatch):
+    config = BridgeConfig(mode="off", routines={"73103f92fad9": "live"}, allow_drop=frozenset({"create_routine"}))
+    assert config.mode_for("73103f92fad9") == "live" and config.mode_for("other") == "off"
+    assert trigger_spec(routine(), TOOLS, config) is not None
+    assert trigger_spec(routine(id="other"), TOOLS, config) is None
+    shadow_everywhere_but_one = BridgeConfig(mode="shadow", routines={"73103f92fad9": "off"})
+    assert trigger_spec(routine(), TOOLS, shadow_everywhere_but_one) is None
+    monkeypatch.setenv("TELOS_CARDEA_ROUTINES", '{"r1": "LIVE", "r2": "off"}')
+    assert BridgeConfig.from_env().routines == {"r1": "live", "r2": "off"}
+    monkeypatch.setenv("TELOS_CARDEA_ROUTINES", '{"r1": "maybe"}')
+    with pytest.raises(ValueError):
+        BridgeConfig.from_env()
+
+
+def test_instructions_compose_prompt_routine_fence_and_tool_names():
+    sibling = routine(id="weekly", name="Weekly digest")
+    other_agent = routine(id="elsewhere", agent_slug="helper", name="Not a sibling")
+    spec = trigger_spec(routine(), TOOLS, LIVE, system_prompt="You are Scout, a lettings researcher.", siblings=[routine(), sibling, other_agent])
+    assert spec is not None
+    text = spec["template"]["instructions"]
+    assert text.startswith("You are Scout, a lettings researcher.\n\n## Routine\n\nSearch listings in E8.")
+    assert "Scope of this run: perform ONLY the routine" in text and "- Weekly digest" in text and "Not a sibling" not in text
+    assert text.count("email the user one summary") == 1
+    assert "- send_email: use `mail-send`" in text and "- rightmove_search: use `listings-rightmove_search`" in text
+    assert text.index("## Routine") < text.index("## Tools in this run")
+    shadow = trigger_spec(routine(), TOOLS, BridgeConfig(mode="shadow"))
+    assert shadow is not None and "- send_email: use `mail-preview` (shadow run: the email is recorded for review, not sent)" in shadow["template"]["instructions"]
+
+
+def test_email_line_not_duplicated_when_prompt_already_asks_for_one_email():
+    spec = trigger_spec(routine(), TOOLS, LIVE, system_prompt="After each routine, send one email with the results.")
+    assert spec is not None and "email the user one summary" not in spec["template"]["instructions"]
+
+
+def test_oversized_prompt_is_trimmed_not_the_routine():
+    spec = trigger_spec(routine(), TOOLS, LIVE, system_prompt="x" * 70000)
+    assert spec is not None
+    text = spec["template"]["instructions"]
+    assert len(text) <= 65536 and text.endswith("create_routine.") and "## Routine" in text
+
+
+def test_ledger_mapping_is_gated(monkeypatch):
+    tools = ["list_property_candidates", "record_property_assessment", "send_email"]
+    monkeypatch.delenv("TELOS_CARDEA_LEDGER", raising=False)
+    assert "list_property_candidates" not in BridgeConfig.from_env().operations
+    monkeypatch.setenv("TELOS_CARDEA_LEDGER", "1")
+    config = BridgeConfig.from_env()
+    live = trigger_spec(routine(), tools, BridgeConfig(mode="live", operations=config.operations))
+    shadow = trigger_spec(routine(), tools, BridgeConfig(mode="shadow", operations=config.operations))
+    assert live is not None and live["template"]["operations"] == ["ledger.list", "ledger.record", "mail.send"]
+    assert shadow is not None and shadow["template"]["operations"] == ["ledger.list", "ledger.record_preview", "mail.preview"]
+
+
+def test_context_operations_are_gated(monkeypatch):
+    monkeypatch.setenv("TELOS_CARDEA_CONTEXT", "1")
+    monkeypatch.setenv("TELOS_CARDEA_LEDGER", "1")
+    env = BridgeConfig.from_env()
+    assert env.context
+    config = BridgeConfig(mode="live", operations=env.operations, context=True)
+    spec = trigger_spec(routine(), ["rightmove_search", "memory_recall", "list_property_candidates", "send_email"], config)
+    assert spec is not None
+    assert spec["template"]["context"] == [
+        {"operation": "telos.routine_context", "arguments": {}},
+        {"operation": "memory.briefing", "arguments": {"query": "Search listings in E8."}},
+        {"operation": "ledger.list", "arguments": {"limit": 50}},
+    ]
+    assert {"telos.routine_context", "memory.briefing", "ledger.list"} <= set(spec["template"]["grants"])
+    bare = trigger_spec(routine(), ["rightmove_search", "send_email"], BridgeConfig(mode="live", context=True))
+    assert bare is not None and bare["template"]["context"] == [{"operation": "telos.routine_context", "arguments": {}}]
+
+
+def test_prod_shadow_configuration_keeps_mirroring(monkeypatch):
+    monkeypatch.setenv("TELOS_CARDEA_MODE", "shadow")
+    monkeypatch.setenv("TELOS_CARDEA_OPERATIONS", '{"browser_open": null, "browser_click": null}')
+    for name in ("TELOS_CARDEA_ROUTINES", "TELOS_CARDEA_ALLOW_DROP", "TELOS_CARDEA_LEDGER", "TELOS_CARDEA_CONTEXT"):
+        monkeypatch.delenv(name, raising=False)
+    config = BridgeConfig.from_env()
+    mirror = plan(routine(), ["rightmove_search", "browser_open", "browser_click", "send_email"], config)
+    assert mirror.spec is not None and mirror.dropped == ("browser_open", "browser_click")
+    assert mirror.spec["template"]["operations"] == ["listings.rightmove_search", "mail.preview"]
+    assert "context" not in mirror.spec["template"]
+
+
+class Cardea:
+    """In-memory Cardea trigger API with switchable failures."""
+
+    def __init__(self, token: Path):
+        self.triggers: dict[str, dict] = {}
+        self.refuse: dict[str, tuple[int, dict]] = {}
+        self.down = False
+        self.status = 0
+        self.config = BridgeConfig(mode="live", url="https://c", token_file=str(token), allow_drop=frozenset({"create_routine"}))
+
+    def client(self, **changes) -> CardeaClient:
+        from dataclasses import replace
+
+        return CardeaClient(replace(self.config, **changes), transport=httpx.MockTransport(self.handler))
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if self.down:
+            raise httpx.ConnectError("cardea unreachable", request=request)
+        if self.status:
+            return httpx.Response(self.status, json={"code": "unauthenticated"})
+        identity = request.url.path.rsplit("/", 1)[1]
+        if request.method == "PUT":
+            if identity in self.refuse:
+                status, body = self.refuse[identity]
+                return httpx.Response(status, json=body)
+            spec = json.loads(request.content)
+            before = self.triggers.get(identity)
+            change = "installed" if before is None else "unchanged" if before["definition"] == spec else "updated"
+            self.triggers[identity] = {"trigger_id": identity, "definition": spec, "definition_sha256": "d", "enabled": spec["enabled"], "removed": False}
+            return httpx.Response(200, json={"change": change})
+        if request.method == "DELETE":
+            self.triggers.pop(identity, None)
+            return httpx.Response(200, json={"change": "removed"})
+        return httpx.Response(200, json={"triggers": list(self.triggers.values()), "next": None})
+
+
+@pytest.fixture
+def cardea(tmp_path: Path) -> Cardea:
+    token = tmp_path / "jwt"
+    token.write_text("svid\n")
+    return Cardea(token)
+
+
+def test_live_ownership_requires_confirmation(cardea: Cardea):
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS)
+    # Before any sync Cardea may already own the slot: skip, don't double send.
+    assert mirror.owned_elsewhere(routine())
+    assert mirror.sync() == {"telos.73103f92fad9": "installed"}
+    assert set(mirror.confirmed) == {"telos.73103f92fad9"} and mirror.owned_elsewhere(routine())
+    # Unmirrorable and non-live routines always run locally.
+    assert not mirror.owned_elsewhere(routine(one_shot=True))
+    shadow = RoutineMirror(cardea.client(mode="shadow"), lambda: [routine()], lambda user, slug: TOOLS)
+    shadow.sync()
+    assert not shadow.owned_elsewhere(routine())
+
+
+def test_definite_refusal_runs_locally_and_alerts_once(cardea: Cardea):
+    alerts: list[tuple[str, str]] = []
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS, on_refusal=lambda rid, why: alerts.append((rid, why)))
+    mirror.sync()
+    assert mirror.owned_elsewhere(routine())
+    cardea.refuse["telos.73103f92fad9"] = (409, {"code": "operation_not_installed"})
+    assert mirror.sync() == {"telos.73103f92fad9": "removed"}  # the older version is taken down
+    assert "telos.73103f92fad9" not in cardea.triggers
+    assert not mirror.owned_elsewhere(routine())
+    mirror.sync()
+    assert len(alerts) == 1 and alerts[0][0] == "73103f92fad9" and "operation_not_installed" in alerts[0][1]
+
+
+def test_unmirrorable_live_routine_is_surfaced(cardea: Cardea):
+    alerts: list[tuple[str, str]] = []
+    mirror = RoutineMirror(
+        cardea.client(allow_drop=frozenset()), lambda: [routine()], lambda user, slug: TOOLS, on_refusal=lambda rid, why: alerts.append((rid, why))
+    )
+    assert mirror.sync() == {}
+    assert not mirror.owned_elsewhere(routine())
+    assert alerts and "create_routine" in alerts[0][1]
+
+
+@pytest.mark.parametrize("failure", ["down", "stale-token"])
+def test_unreachable_cardea_skips_and_alerts_after_repeated_failures(cardea: Cardea, failure: str):
+    alerts: list[tuple[int, str]] = []
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS, on_sync_failure=lambda n, e: alerts.append((n, e)))
+    mirror.sync()
+    if failure == "down":
+        cardea.down = True
+    else:
+        cardea.status = 401
+    for _ in range(6):
+        mirror.sync()
+        assert mirror.owned_elsewhere(routine())  # never falls back to a local run
+    assert [n for n, _ in alerts] == [3, 6]
+    assert not mirror.refused
+    cardea.down, cardea.status = False, 0
+    mirror.sync()
+    assert mirror.failures == 0 and mirror.owned_elsewhere(routine())
+
+
+def test_unreachable_before_first_sync_still_skips(cardea: Cardea):
+    cardea.down = True
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS)
+    assert mirror.sync() == {"telos.73103f92fad9": "error"}
+    assert mirror.owned_elsewhere(routine()) and not mirror.synced
+
+
+def test_mode_off_removes_existing_triggers(cardea: Cardea):
+    RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS).sync()
+    assert "telos.73103f92fad9" in cardea.triggers
+    off = RoutineMirror(cardea.client(mode="off"), lambda: [routine()], lambda user, slug: TOOLS)
+    assert off.sync() == {"telos.73103f92fad9": "removed"}
+    assert cardea.triggers == {} and not off.owned_elsewhere(routine())
+
+
+def test_cardea_bridge_is_active_when_configured_even_if_off(monkeypatch, tmp_path: Path):
+    from telos.api import app as app_module
+
+    monkeypatch.setenv("TELOS_CARDEA_MODE", "off")
+    monkeypatch.delenv("TELOS_CARDEA_URL", raising=False)
+    assert app_module._cardea_bridge() is None  # noqa: SLF001
+    monkeypatch.setenv("TELOS_CARDEA_URL", "https://cardea.internal:8443")
+    monkeypatch.setenv("TELOS_CARDEA_TOKEN_FILE", str(tmp_path / "jwt"))
+    bridge = app_module._cardea_bridge()  # noqa: SLF001
+    assert bridge is not None and bridge.client.config.mode == "off"
+
+
+def test_prompt_or_tool_change_updates_the_trigger(cardea: Cardea):
+    prompt = {"text": "You are Scout."}
+    tools = list(TOOLS)
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: tools, agent_prompt=lambda user, slug: prompt["text"])
+    assert mirror.sync() == {"telos.73103f92fad9": "installed"}
+    assert cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["instructions"].startswith("You are Scout.")
+    assert mirror.sync() == {"telos.73103f92fad9": "unchanged"}
+    prompt["text"] = "You are Scout, now terser."
+    assert mirror.sync() == {"telos.73103f92fad9": "updated"}
+    tools.append("web_search")
+    assert mirror.sync() == {"telos.73103f92fad9": "updated"}
+    assert "web.search" in cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["operations"]
+
+
+@pytest.mark.asyncio
+async def test_skipping_for_cardea_advances_last_run(tmp_path: Path):
+    from telos.routines import RoutineStore
+
+    store = RoutineStore(tmp_path / "routines.db")
+    created = store.create("testuser", "scout", "Search", time_of_day="08:30", interval_seconds=86400)
+
+    async def execute(user_id, slug, message, r):
+        raise AssertionError("must not run locally")
+
+    await RoutineRunner(store, execute, owned_elsewhere=lambda r: True)._run_routine(created)  # noqa: SLF001
+    current = store.get(created.id)
+    assert current is not None and current.last_run is not None
