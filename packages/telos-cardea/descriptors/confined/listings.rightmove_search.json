@@ -1,0 +1,132 @@
+{
+  "tool": {
+    "name": "listings.rightmove_search",
+    "title": "Rightmove search",
+    "description": "Search Rightmove for UK property listings by area and filters; returns structured search-card results from the first results page.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "UK location (postcode, town, or area), e.g. 'Brixton', 'SW2', 'Manchester'."
+        },
+        "min_beds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Minimum bedrooms."
+        },
+        "max_beds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Maximum bedrooms."
+        },
+        "max_price": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum price in GBP (monthly rent for lettings)."
+        },
+        "for_sale": {
+          "type": "boolean",
+          "default": true,
+          "description": "True for sale (default), false for rent."
+        }
+      },
+      "required": [
+        "location"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string"
+        },
+        "agency": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "results",
+            "no_matches",
+            "partial",
+            "unavailable"
+          ],
+          "description": "'unavailable' means coverage is missing, never zero inventory."
+        },
+        "search_url": {
+          "type": "string"
+        },
+        "listings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "total": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "caveat": {
+          "type": "string"
+        },
+        "pages_visited": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending_urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stop_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "site",
+        "status",
+        "search_url",
+        "listings"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "executor": {
+      "kind": "confined",
+      "profile": "browser",
+      "worker": "telos-rightmove"
+    },
+    "effect": "read",
+    "timeout_seconds": 180,
+    "max_output_bytes": 196608
+  }
+}

@@ -2,8 +2,8 @@
 
 Copied from pasinit/cardea ``apps/api/src/cardea/service/operations.py`` at
 b15119ba1ea512356a2522e1e682768c2ac35705, keeping
-``Binding``, ``OperationDescriptor`` and the argument/output checks of
-``Registry``. Cardea's ``Record``, ``Right`` and ``OperationName`` are inlined.
+``ConfinedExecutor``, ``Binding``, ``OperationDescriptor`` and the argument/output
+checks of ``Registry``. Cardea's ``Record``, ``Right`` and ``OperationName`` are inlined.
 ``conftest.py`` prefers the real Cardea when it is installed
 (``uv sync --group cardea``); CI runs without it.
 """
@@ -31,16 +31,24 @@ MAX_OUTPUT_BYTES = 262144
 _NAME: TypeAdapter[str] = TypeAdapter(OperationName)
 HandlerName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")]
 Pointer = Annotated[str, Field(pattern=r"^(/([^~/]|~[01])*)+$", max_length=256)]
+WorkerName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")]
 
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
+class ConfinedExecutor(Record):
+    kind: Literal["confined"]
+    profile: WorkerName
+    worker: WorkerName
+
+
 class Binding(Record):
     version: Annotated[int, Field(strict=True, ge=1)]
     effect: Literal["read", "effect"]
-    handler: HandlerName
+    handler: HandlerName | None = None
+    executor: ConfinedExecutor | None = None
     timeout_seconds: Annotated[int, Field(strict=True, ge=1, le=600)] = 30
     max_output_bytes: Annotated[int, Field(strict=True, ge=1, le=MAX_OUTPUT_BYTES)] = 65536
     requires: tuple[Right, ...] = ()
@@ -51,6 +59,8 @@ class Binding(Record):
     def effect_only(self) -> Self:
         if self.effect == "read" and (self.idempotency_scope is not None or self.reconciler):
             raise ValueError("Read operations have no effect scope or reconciler")
+        if (self.handler is None) == (self.executor is None):
+            raise ValueError("Declare an in-process handler or a confined executor, not both")
         return self
 
 

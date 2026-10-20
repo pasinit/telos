@@ -1,0 +1,180 @@
+{
+  "profiles": {
+    "browser": {
+      "memory_mb": 700,
+      "cpu_percent": 150,
+      "tasks": 512,
+      "wall_seconds": 180,
+      "scratch_mb": 256,
+      "output_kb": 256,
+      "jit": true,
+      "network": {
+        "policy": "allow_list",
+        "proxy": "127.0.0.2:3128",
+        "hosts": [
+          "challenges.cloudflare.com",
+          "rightmove.co.uk",
+          "*.rightmove.co.uk",
+          "zoopla.co.uk",
+          "*.zoopla.co.uk",
+          "zoocdn.com",
+          "*.zoocdn.com",
+          "onthemarket.com",
+          "*.onthemarket.com",
+          "foxtons.co.uk",
+          "*.foxtons.co.uk",
+          "dexters.co.uk",
+          "*.dexters.co.uk",
+          "chestertons.co.uk",
+          "*.chestertons.co.uk",
+          "hamptons.co.uk",
+          "*.hamptons.co.uk",
+          "ashponsonby.com",
+          "*.ashponsonby.com",
+          "kfh.co.uk",
+          "*.kfh.co.uk",
+          "portico.com",
+          "*.portico.com",
+          "kayandco.com",
+          "*.kayandco.com",
+          "parkheath.com",
+          "*.parkheath.com",
+          "marshandparsons.co.uk",
+          "*.marshandparsons.co.uk",
+          "openrent.co.uk",
+          "*.openrent.co.uk"
+        ]
+      }
+    }
+  },
+  "workers": {
+    "telos-browser-open": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "browser.open"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright"
+      }
+    },
+    "telos-browser-click": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "browser.click"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright"
+      }
+    },
+    "telos-rightmove": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "listings.rightmove_search"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
+        "TELOS_CARDEA_BROWSER_FALLBACK": "1"
+      }
+    },
+    "telos-zoopla": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "listings.zoopla_search"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
+        "TELOS_CARDEA_BROWSER_FALLBACK": "1"
+      }
+    },
+    "telos-agency": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "listings.agency_search"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
+        "TELOS_CARDEA_BROWSER_FALLBACK": "1"
+      }
+    }
+  }
+}
