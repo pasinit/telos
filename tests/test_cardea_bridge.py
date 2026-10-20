@@ -460,3 +460,48 @@ def test_too_large_first_install_runs_locally(cardea: Cardea):
     mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS)
     assert mirror.sync() == {"telos.73103f92fad9": "refused"}
     assert not mirror.owned_elsewhere(routine())
+
+
+@pytest.mark.parametrize("config", [LIVE, BridgeConfig(mode="shadow")])
+def test_instructions_name_the_routine_recipient(config: BridgeConfig):
+    spec = trigger_spec(routine(), TOOLS, config, recipient="sam@example.com")
+    assert spec is not None
+    text = spec["template"]["instructions"]
+    routine_section = text[text.index("## Routine") : text.index("## Tools in this run")]
+    assert "Send the summary email to: sam@example.com" in routine_section
+    assert spec["template"]["expect"] and spec["template"]["expect"][0]["operation"] in {"mail.send", "mail.preview"}
+
+
+def test_recipient_line_follows_a_prompt_that_already_asks_for_one_email():
+    spec = trigger_spec(routine(), TOOLS, LIVE, system_prompt="Send one email with the results.", recipient="sam@example.com")
+    assert spec is not None
+    text = spec["template"]["instructions"]
+    assert "email the user one summary" not in text and "Send the summary email to: sam@example.com" in text
+
+
+@pytest.mark.parametrize("config", [LIVE, BridgeConfig(mode="shadow")])
+def test_no_recipient_withholds_mail_and_expects_no_email(config: BridgeConfig):
+    spec = trigger_spec(routine(), TOOLS, config, recipient="")
+    assert spec is not None
+    template = spec["template"]
+    assert not {"mail.send", "mail.preview"} & set(template["operations"]) and template["expect"] == []
+    text = template["instructions"]
+    assert "do not send any email in this run" in text and "Send the summary email to" not in text
+    assert "email the user one summary" not in text
+    assert "Not available in this run (do not try to use them): create_routine, send_email." in text
+
+
+def test_no_recipient_and_only_mail_tools_stays_local():
+    assert trigger_spec(routine(), ["send_email"], LIVE, recipient="") is None
+
+
+def test_mirror_resolves_the_recipient_per_user(cardea: Cardea):
+    emails = {"testuser": "sam@example.com", "other": ""}
+    mirror = RoutineMirror(
+        cardea.client(), lambda: [routine(), routine(id="quiet", user_id="other")], lambda user, slug: TOOLS, user_email=emails.__getitem__
+    )
+    mirror.sync()
+    loud = cardea.triggers["telos.73103f92fad9"]["definition"]["template"]
+    quiet = cardea.triggers["telos.quiet"]["definition"]["template"]
+    assert "Send the summary email to: sam@example.com" in loud["instructions"] and "mail.send" in loud["operations"]
+    assert "mail.send" not in quiet["operations"] and quiet["expect"] == []

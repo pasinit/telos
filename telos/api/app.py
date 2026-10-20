@@ -516,7 +516,7 @@ def _cardea_bridge() -> RoutineMirror | None:
     )
     return RoutineMirror(
         CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt,
-        on_sync_failure=on_sync_failure, on_refusal=on_refusal,
+        on_sync_failure=on_sync_failure, on_refusal=on_refusal, user_email=_registry.get_user_email,
     )
 
 

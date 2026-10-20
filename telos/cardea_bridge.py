@@ -84,6 +84,9 @@ TOO_LARGE = 413
 REQUEST_MARGIN = 256
 TRUNCATED_NOTE = "[The system prompt above was truncated to fit Cardea's request size limit.]"
 EMAIL_LINE = "When you are done, email the user one summary of the results."
+RECIPIENT_LINE = "Send the summary email to: {recipient} (the only authorised recipient; do not email anyone else)."
+NO_RECIPIENT_LINE = "No email recipient is configured for this routine: do not send any email in this run."
+MAIL_OPERATIONS = frozenset({"mail.send", "mail.preview"})
 _SAYS_ONE_EMAIL = re.compile(r"\b(one|a single|exactly one)\s+(summary\s+)?e-?mail\b|\be-?mail the user (one|a single)\b", re.IGNORECASE)
 _SAFE = re.compile(r"[^A-Za-z0-9._:-]")
 _MAX_INSTRUCTIONS = 65536
@@ -251,15 +254,24 @@ def compose_instructions(
     system_prompt: str = "",
     note: str = "",
     prompt_chars: int | None = None,
+    recipient: str | None = None,
 ) -> str:
-    """Agent prompt + ``## Routine`` (description, sibling fence, email line) + tools appendix.
+    """Agent prompt + ``## Routine`` (description, sibling fence, email lines) + tools appendix.
+
+    ``recipient`` is the address Telos would email (None: not resolved, no recipient line;
+    "": none, so the run must not send email).
 
     The system prompt alone is trimmed (to ``prompt_chars``, and to Cardea's instructions limit)
     so the routine and tools always fit; a trimmed prompt is followed by ``TRUNCATED_NOTE``.
     """
     routine_part = routine.description + note
-    if routine.notify_email and not _SAYS_ONE_EMAIL.search(system_prompt + "\n" + routine.description):
-        routine_part += "\n\n" + EMAIL_LINE
+    if recipient == "":
+        routine_part += "\n\n" + NO_RECIPIENT_LINE
+    elif routine.notify_email:
+        if not _SAYS_ONE_EMAIL.search(system_prompt + "\n" + routine.description):
+            routine_part += "\n\n" + EMAIL_LINE
+        if recipient:
+            routine_part += "\n" + RECIPIENT_LINE.format(recipient=recipient)
     tail = f"## Routine\n\n{routine_part}\n\n{tools_appendix(mapped, dropped)}"
     prompt = system_prompt.strip()
     limit = max(0, _MAX_INSTRUCTIONS - len(tail) - len(TRUNCATED_NOTE) - 4)
@@ -299,8 +311,14 @@ def plan(
     *,
     system_prompt: str = "",
     siblings: Iterable[Routine] = (),
+    recipient: str | None = None,
 ) -> MirrorPlan:
-    """The Cardea trigger for one routine under its mode, or the reason it stays local."""
+    """The Cardea trigger for one routine under its mode, or the reason it stays local.
+
+    ``recipient`` is the address Telos would email the summary to (``RegistryRepo.get_user_email``).
+    "" means Telos would send nothing, so mail tools are withheld from the run and nothing is
+    expected of them; None (not resolved) leaves mail as mapped, without a recipient line.
+    """
     mode = config.mode_for(routine.id)
     if mode == "off":
         return MirrorPlan(mode, None, reason="mode is off")
@@ -315,6 +333,10 @@ def plan(
             dropped.append(tool)
             continue
         mapped[tool] = PREVIEW.get(name, name) if mode == "shadow" else name
+    # Without a recipient Telos sends no email; an exposed mail tool would invite a made-up address.
+    withheld = [t for t, op in mapped.items() if recipient == "" and op in MAIL_OPERATIONS]
+    for tool in withheld:
+        del mapped[tool]
     if not mapped:
         return MirrorPlan(mode, None, tuple(dropped), reason="agent has no tool with a Cardea operation")
     if mode == "live" and (unallowed := [t for t in dropped if t not in config.allow_drop]):
@@ -352,7 +374,8 @@ def plan(
 
     def fits(prompt_chars: int | None) -> bool:
         template["instructions"] = compose_instructions(
-            routine, mapped, dropped, system_prompt=system_prompt, note=note, prompt_chars=prompt_chars
+            routine, mapped, [*dropped, *withheld], system_prompt=system_prompt, note=note, prompt_chars=prompt_chars,
+            recipient=recipient,
         )
         return request_bytes(spec) <= budget
 
@@ -379,9 +402,10 @@ def trigger_spec(
     *,
     system_prompt: str = "",
     siblings: Iterable[Routine] = (),
+    recipient: str | None = None,
 ) -> dict[str, Any] | None:
     """The Cardea trigger for one routine, or None when it cannot be mirrored."""
-    return plan(routine, agent_tools, config, system_prompt=system_prompt, siblings=siblings).spec
+    return plan(routine, agent_tools, config, system_prompt=system_prompt, siblings=siblings, recipient=recipient).spec
 
 
 class CardeaClient:
@@ -460,11 +484,14 @@ class RoutineMirror:
         agent_prompt: Callable[[str, str], str] | None = None,
         on_sync_failure: Callable[[int, str], None] | None = None,
         on_refusal: Callable[[str, str], None] | None = None,
+        user_email: Callable[[str], str] | None = None,
     ) -> None:
         self.client = client
         self.routines = routines
         self.agent_tools = agent_tools
         self.agent_prompt = agent_prompt
+        # user id -> the address Telos emails routine results to ("" when none).
+        self.user_email = user_email
         self.on_sync_failure = on_sync_failure
         self.on_refusal = on_refusal
         # trigger id -> confirmation; only these routines are owned by Cardea.
@@ -487,6 +514,7 @@ class RoutineMirror:
             self.client.config,
             system_prompt=prompt,
             siblings=routines or (),
+            recipient=self.user_email(routine.user_id) if self.user_email is not None else None,
         )
 
     def mirrored(self, routine: Routine) -> bool:
