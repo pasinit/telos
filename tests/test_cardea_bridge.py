@@ -531,3 +531,48 @@ def test_browser_read_stays_dropped_when_browser_open_is_not_installed():
     assert plan(routine(), tools, BridgeConfig(mode="live", operations=prod)).spec is None
     explicit = plan(routine(), tools, BridgeConfig(mode="shadow", operations={**DEFAULT_OPERATIONS, "browser_read": None}))
     assert explicit.dropped == ("browser_read",)
+
+
+def test_templates_carry_run_limits():
+    template = trigger_spec(routine(), TOOLS, LIVE)["template"]  # type: ignore[index]
+    assert template["attempt_timeout_seconds"] == 2700 and template["timeout_seconds"] == 3600
+    assert "max_attempts" not in template  # Cardea's default (2)
+    custom = BridgeConfig(mode="live", allow_drop=frozenset({"create_routine"}), attempt_timeout_seconds=600, run_timeout_seconds=1200, max_attempts=1)
+    template = trigger_spec(routine(), TOOLS, custom)["template"]  # type: ignore[index]
+    assert (template["attempt_timeout_seconds"], template["timeout_seconds"], template["max_attempts"]) == (600, 1200, 1)
+
+
+def test_run_limits_from_env(monkeypatch):
+    for name in ("TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS", "TELOS_CARDEA_RUN_TIMEOUT_SECONDS", "TELOS_CARDEA_MAX_ATTEMPTS"):
+        monkeypatch.delenv(name, raising=False)
+    config = BridgeConfig.from_env()
+    assert (config.attempt_timeout_seconds, config.run_timeout_seconds, config.max_attempts) == (2700, 3600, None)
+    monkeypatch.setenv("TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS", "1800")
+    monkeypatch.setenv("TELOS_CARDEA_RUN_TIMEOUT_SECONDS", "3000")
+    monkeypatch.setenv("TELOS_CARDEA_MAX_ATTEMPTS", "3")
+    config = BridgeConfig.from_env()
+    assert (config.attempt_timeout_seconds, config.run_timeout_seconds, config.max_attempts) == (1800, 3000, 3)
+
+
+@pytest.mark.parametrize(("env", "message"), [
+    ({"TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS": "10"}, "ATTEMPT_TIMEOUT_SECONDS must be between 30 and 3600, not 10"),
+    ({"TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS": "0"}, "between 30 and 3600, not 0"),
+    ({"TELOS_CARDEA_RUN_TIMEOUT_SECONDS": "7200"}, "RUN_TIMEOUT_SECONDS must be between 60 and 3600, not 7200"),
+    ({"TELOS_CARDEA_MAX_ATTEMPTS": "4"}, "MAX_ATTEMPTS must be between 1 and 3, not 4"),
+    ({"TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS": "3000", "TELOS_CARDEA_RUN_TIMEOUT_SECONDS": "2000"}, r"\(3000\) must not exceed"),
+    ({"TELOS_CARDEA_RUN_TIMEOUT_SECONDS": "an hour"}, "must be an integer"),
+])
+def test_run_limits_are_validated_at_startup(monkeypatch, env, message):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=message):
+        BridgeConfig.from_env()
+
+
+def test_changing_run_limits_updates_the_trigger(cardea: Cardea):
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS)
+    assert mirror.sync() == {"telos.73103f92fad9": "installed"}
+    assert mirror.sync() == {"telos.73103f92fad9": "unchanged"}
+    longer = RoutineMirror(cardea.client(attempt_timeout_seconds=3000), lambda: [routine()], lambda user, slug: TOOLS)
+    assert longer.sync() == {"telos.73103f92fad9": "updated"}
+    assert cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["attempt_timeout_seconds"] == 3000
