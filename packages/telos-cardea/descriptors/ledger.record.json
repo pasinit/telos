@@ -1,0 +1,226 @@
+{
+  "tool": {
+    "name": "ledger.record",
+    "title": "Record property assessment",
+    "description": "Persist a property's screening evidence and next action before moving to another candidate or sending email. Store unknowns honestly. This records an agent assessment, not independent verification. All mandatory checks must pass for verified. Supply known original dates once; unknown dates stay unknown, and existing first-seen and unresolved dates cannot be reset by rediscovery. Unresolved leads do not expire automatically. One assessment per listing URL per run: a repeated call for the same URL returns the first result.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "CriterionEvidence": {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "pass",
+                "fail",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "evidence": {
+              "description": "Exact observed fact or quote; for unknown, state the missing evidence. Never infer from tool success.",
+              "maxLength": 1200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "source_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "observed_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Actual evidence observation time, not an invented or refreshed date."
+            }
+          },
+          "required": [
+            "status",
+            "evidence"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "type": "string"
+        },
+        "address": {
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "verified",
+            "needs_verification",
+            "rejected",
+            "dropped",
+            "applied"
+          ],
+          "type": "string"
+        },
+        "criteria": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CriterionEvidence"
+          },
+          "propertyNames": {
+            "enum": [
+              "budget",
+              "postcode",
+              "bedrooms",
+              "lounge",
+              "ceilings",
+              "flooring",
+              "building",
+              "size",
+              "floor",
+              "availability"
+            ]
+          },
+          "type": "object"
+        },
+        "price_pcm": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "size_sqm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "floor": {
+          "anyOf": [
+            {
+              "maxLength": 150,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "first_seen_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Actual first-seen time from supplied history or this run for a genuinely new property; null if unknown."
+        },
+        "unresolved_since": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original unresolved date, not today's date on a rediscovery. Null when unknown. Existing dates are preserved."
+        },
+        "reason": {
+          "maxLength": 1500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "next_action": {
+          "default": "",
+          "maxLength": 500,
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "address",
+        "disposition",
+        "criteria",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "recorded": {
+          "const": true
+        },
+        "assessment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duplicate": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "recorded",
+        "assessment_id",
+        "duplicate"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "ledger.record",
+    "effect": "effect",
+    "timeout_seconds": 30,
+    "max_output_bytes": 4096,
+    "idempotency_scope": [
+      "/url"
+    ],
+    "reconciler": "ledger.record.reconcile"
+  }
+}

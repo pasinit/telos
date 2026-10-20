@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "telos-cardea"
 version = "0.1.0"
-description = "Telos routine tools (mail, listings, search, browser, memory) as Cardea installed operations"
+description = "Telos routine tools (mail, listings, search, browser, memory, ledger) as Cardea installed operations"
 readme = "README.md"
 # Cardea's API requires >=3.12; the package runs in Cardea's environment.
 requires-python = ">=3.12"
@@ -34,6 +34,13 @@ browser = ["patchright"]
 "browser.open" = "telos_cardea.browser:open_page"
 "browser.click" = "telos_cardea.browser:click"
 "memory.recall" = "telos_cardea.memory:recall"
+"memory.briefing" = "telos_cardea.memory:briefing"
+"telos.routine_context" = "telos_cardea.routine:routine_context"
+"ledger.list" = "telos_cardea.ledger:list_"
+"ledger.history" = "telos_cardea.ledger:history"
+"ledger.record" = "telos_cardea.ledger:record"
+"ledger.record.reconcile" = "telos_cardea.ledger:reconcile_record"
+"ledger.record_preview" = "telos_cardea.ledger:record_preview"
 
 [dependency-groups]
 dev = [

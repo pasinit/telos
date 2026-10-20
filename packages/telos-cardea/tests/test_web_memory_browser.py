@@ -7,7 +7,7 @@ import pytest
 
 from telos_cardea import browser, memory, web
 from telos_cardea._cardea import OperationContext, OperationRejected
-from telos_cardea.config import Config
+from telos_cardea.config import Config, RecordatioScope
 
 from conftest import assert_input, assert_output
 
@@ -89,6 +89,67 @@ async def test_recall_refuses_unconfigured_namespace(config: Config, make_contex
 async def test_recall_http_error_raises(config: Config, make_context: MakeContext) -> None:
     with pytest.raises(httpx.HTTPStatusError):
         await memory.recall({"query": "x"}, make_context(), config=config, client=mock_client(lambda r: httpx.Response(503)))
+
+
+async def test_recall_scope_is_namespace_and_agent(config: Config, make_context: MakeContext) -> None:
+    other = RecordatioScope(user_id="owner", slug="scout")
+    config = replace(config, recordatio_scopes={**config.recordatio_scopes, "telos-owner/telos-scout": other})
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    await memory.recall({"query": "x"}, make_context(agent_id="telos-scout"), config=config, client=mock_client(handler))
+    await memory.recall({"query": "x"}, make_context(), config=config, client=mock_client(handler))
+    assert [r.url.params["slug"] for r in seen] == ["scout", "homey"]
+    with pytest.raises(OperationRejected, match="telos-unknown"):
+        await memory.recall({"query": "x"}, make_context(agent_id="telos-unknown"), config=config, client=mock_client(handler))
+
+
+@pytest.mark.parametrize("agent_id", ["telos-homey", None])
+async def test_recall_falls_back_to_namespace_key(config: Config, make_context: MakeContext, agent_id: str | None) -> None:
+    config = replace(config, recordatio_scopes={"telos-owner": RecordatioScope(user_id="owner", slug="legacy")})
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    await memory.recall({"query": "x"}, make_context(agent_id=agent_id), config=config, client=mock_client(handler))
+    assert seen[0].url.params["slug"] == "legacy"
+
+
+# ── memory.briefing ────────────────────────────────────────────────────
+
+
+async def test_briefing_uses_agent_scope(config: Config, make_context: MakeContext) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"briefing": "Prefers south-facing flats.", "units": 3})
+
+    args = {"query": "Daily flat search in W2"}
+    assert_input("memory.briefing", args)
+    output = await memory.briefing(args, make_context(), config=config, client=mock_client(handler))
+    assert output == {"briefing": "Prefers south-facing flats.", "units": 3}
+    assert_output("memory.briefing", output)
+    request = seen[0]
+    assert request.url.path == "/v1/users/owner/briefing"
+    assert dict(request.url.params) == {"slug": "homey", "query": "Daily flat search in W2"}
+    assert request.headers["Authorization"] == "Bearer chat-key"
+
+
+async def test_briefing_refuses_unconfigured_scope(config: Config, make_context: MakeContext) -> None:
+    with pytest.raises(OperationRejected):
+        await memory.briefing({"query": "x"}, make_context(agent_id="telos-other"), config=config,
+                              client=mock_client(lambda r: httpx.Response(200, json={"briefing": "", "units": 0})))
+
+
+async def test_briefing_malformed_response_raises(config: Config, make_context: MakeContext) -> None:
+    with pytest.raises(RuntimeError):
+        await memory.briefing({"query": "x"}, make_context(), config=config, client=mock_client(lambda r: httpx.Response(200, json={"units": 0})))
 
 
 # ── browser.open / browser.click (fake page; no Chromium) ─────────────

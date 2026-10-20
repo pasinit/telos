@@ -23,6 +23,11 @@ except ImportError:  # pragma: no cover - exercised only without Cardea installe
         receipt_id: str
         deadline: datetime
         effect_key: str
+        lease_id: str = ""
+        # Fields Cardea is adding to the context; read them with the helpers below.
+        agent_id: str | None = None
+        idempotency_context: str | None = None
+        slot_time: str | None = None
 
     @dataclass(frozen=True)
     class Reconciliation:  # type: ignore[no-redef]
@@ -33,4 +38,15 @@ except ImportError:  # pragma: no cover - exercised only without Cardea installe
 Arguments = dict[str, Any]
 Output = dict[str, Any]
 
-__all__ = ["Arguments", "OperationContext", "OperationRejected", "Output", "Reconciliation"]
+
+def agent_id(context: OperationContext) -> str | None:
+    """The calling agent run's principal; ``None`` outside agent runs or on a Cardea without the field."""
+    return getattr(context, "agent_id", None) or None
+
+
+def slot_time(context: OperationContext) -> str | None:
+    """ISO-8601 scheduled slot time of a trigger-admitted run, when Cardea provides it."""
+    return getattr(context, "slot_time", None) or None
+
+
+__all__ = ["Arguments", "OperationContext", "OperationRejected", "Output", "Reconciliation", "agent_id", "slot_time"]

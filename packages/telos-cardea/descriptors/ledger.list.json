@@ -1,0 +1,62 @@
+{
+  "tool": {
+    "name": "ledger.list",
+    "title": "List property assessments",
+    "description": "Read this agent's persisted property assessments (latest per listing), including exclusions and original unresolved dates. Page through all records with next_offset; stored assessments are historical, not proof of current availability.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "next_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "items",
+        "next_offset"
+      ],
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "ledger.list",
+    "effect": "read",
+    "timeout_seconds": 30,
+    "max_output_bytes": 262144
+  }
+}

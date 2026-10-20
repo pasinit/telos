@@ -47,8 +47,11 @@ class Config:
     brevo_api_url: str = "https://api.brevo.com/v3"
     recordatio_url: str = "http://localhost:8787"
     recordatio_api_key: str = ""
-    # Cardea namespace -> the Recordatio user/agent whose memory it may read.
+    # "<namespace>/<agent_id>" (or a bare namespace) -> the Recordatio user/agent whose memory it may read.
     recordatio_scopes: dict[str, RecordatioScope] = field(default_factory=dict)
+    # Telos's internal API (ledger, routine context) and the JWT-SVID file authenticating to it.
+    telos_url: str = ""
+    telos_token_file: str = ""
     search_engine: str = "duckduckgo"
     serper_key: str = ""
     serpapi_key: str = ""
@@ -56,6 +59,12 @@ class Config:
     unblocker_timeout: int = 75
     # Allow listing fetches to fall back to a headless browser (patchright).
     browser_fallback: bool = False
+
+    def recordatio_scope(self, namespace: str, agent: str | None) -> RecordatioScope | None:
+        """The scope for ``(namespace, agent)``; a bare-namespace key is the backward-compatible fallback."""
+        if agent and (scope := self.recordatio_scopes.get(f"{namespace}/{agent}")) is not None:
+            return scope
+        return self.recordatio_scopes.get(namespace)
 
 
 def _read_file(path: Path) -> dict[str, Any]:
@@ -83,6 +92,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     recordatio = data.get("recordatio", {})
     search = data.get("search", {})
     fetch = data.get("fetch", {})
+    telos = data.get("telos", {})
 
     def pick(name: str, section: dict[str, Any], key: str, default: Any = "") -> Any:
         return env.get(name) or section.get(key, default)
@@ -101,6 +111,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         recordatio_url=pick("RECORDATIO_URL", recordatio, "url", "http://localhost:8787"),
         recordatio_api_key=pick("CHAT_API_KEY", recordatio, "api_key"),
         recordatio_scopes=scopes,
+        telos_url=pick("TELOS_INTERNAL_URL", telos, "url"),
+        telos_token_file=pick("TELOS_INTERNAL_TOKEN_FILE", telos, "token_file"),
         search_engine=pick("SEARCH_ENGINE", search, "engine", "duckduckgo").lower(),
         serper_key=pick("SERPER_KEY", search, "serper_key"),
         serpapi_key=pick("SERPAPI_KEY", search, "serpapi_key"),

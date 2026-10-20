@@ -1,0 +1,43 @@
+{
+  "tool": {
+    "name": "ledger.history",
+    "title": "Property assessment history",
+    "description": "Read every dated assessment recorded for one listing URL, including conflicting observations.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 2083
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": true,
+      "minProperties": 1
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "ledger.history",
+    "effect": "read",
+    "timeout_seconds": 30,
+    "max_output_bytes": 131072
+  }
+}

@@ -34,12 +34,17 @@ def test_package_never_imports_telos() -> None:
 def test_env_overrides_private_file(tmp_path: Path) -> None:
     file = tmp_path / "config.toml"
     file.write_text('[smtp]\nhost = "smtp-relay.brevo.com"\nuser = "u"\npassword = "file-pass"\nfrom = "telos@example.org"\n'
-                    '[recordatio.scopes."telos-owner"]\nuser_id = "owner"\nslug = "homey"\n')
+                    '[recordatio.scopes."telos-owner/telos-homey"]\nuser_id = "owner"\nslug = "homey"\n'
+                    '[telos]\nurl = "http://telos.test:7445"\ntoken_file = "/run/telos-cardea/telos-internal.jwt"\n')
     os.chmod(file, 0o600)
     config = load_config({"TELOS_CARDEA_CONFIG": str(file), "SMTP_PASSWORD": "env-pass", "SEARCH_ENGINE": "Serper"})
     assert config.smtp.host == "smtp-relay.brevo.com" and config.smtp.port == 587
     assert config.smtp.password == "env-pass"
-    assert config.recordatio_scopes["telos-owner"].slug == "homey"
+    assert config.recordatio_scope("telos-owner", "telos-homey") == config.recordatio_scopes["telos-owner/telos-homey"]
+    assert config.recordatio_scope("telos-owner", None) is None
+    assert config.telos_url == "http://telos.test:7445"
+    assert config.telos_token_file == "/run/telos-cardea/telos-internal.jwt"
+    assert load_config({"TELOS_CARDEA_CONFIG": str(file), "TELOS_INTERNAL_URL": "http://telos.internal.example:7445"}).telos_url == "http://telos.internal.example:7445"
     assert config.search_engine == "serper"
 
 
