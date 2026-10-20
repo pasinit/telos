@@ -13,7 +13,7 @@ constructors retain their existing defaults; the Telos application explicitly
 passes the selected provider throughout.
 
 Chat runs through Recordatio's subscription transport. Utility calls and nightly
-jobs use the shared Pontifex client directly, without memory injection. Nightly
+jobs call the provider-routing client directly, without memory injection. Nightly
 tools keep their existing host handlers and schemas. Only the implementer gets
 workspace writes and network-enabled shell execution in disposable clones;
 chat, utility calls, and analysts do not gain native shell access.
@@ -94,5 +94,3 @@ Utility completion chunks arrive when the Codex turn finishes. Its `max_tokens`
 argument is a length hint rather than a hard API limit; wall-clock timeouts still
 apply. Unsupported Claude-native tool names fail explicitly; Telos tools keep
 their existing MCP names and permissions.
-
-Related: pasinit/telos#228, pasinit/pontifex#19, pasinit/recordatio#219.
