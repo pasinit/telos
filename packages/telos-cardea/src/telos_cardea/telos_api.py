@@ -24,6 +24,8 @@ from telos_cardea.config import Config
 
 API_PREFIX = "/internal/cardea/v1"
 TIMEOUT_SECONDS = 30
+# Telos's 404 detail when the (namespace, agent) has no mirrored routine, as opposed to a missing resource.
+SCOPE_NOT_FOUND = "No mirrored routine for this agent"
 
 
 def _token(config: Config) -> str:
@@ -54,12 +56,14 @@ async def request(config: Config, context: OperationContext, method: str, path: 
                   client: httpx.AsyncClient | None = None) -> httpx.Response:
     """One authenticated call. Refusals Telos is certain about raise ``OperationRejected``.
 
-    - missing configuration, an unreachable listener, 401/403, 404 (unmapped scope), 409 (a business
-      rule, such as moving an assessment out of ``applied``) and 422 are certain to have had no
-      effect, so they raise ``OperationRejected``;
-    - timeouts, dropped connections and 5xx propagate, so Cardea leaves an effect uncertain for its reconciler.
+    - missing configuration, an unreachable listener, 400 (missing scope headers), 401/403, 404,
+      409 (a business rule) and 422 (validation, including moving an assessment out of ``applied``)
+      are certain to have had no effect, so they raise ``OperationRejected``;
+    - timeouts, dropped connections and 5xx (including 503 while Telos has no SPIRE bundle)
+      propagate, so Cardea leaves an effect uncertain for its reconciler.
 
-    ``allow_not_found`` returns a 404 to the caller instead (the reconciler's by-key lookup).
+    ``allow_not_found`` returns a resource 404 to the caller instead (the reconciler's by-key
+    lookup); an unmapped-scope 404 always raises.
     """
     if not config.telos_url:
         raise OperationRejected("Telos internal URL is not configured (telos.url / TELOS_INTERNAL_URL)")
@@ -74,15 +78,19 @@ async def request(config: Config, context: OperationContext, method: str, path: 
     except httpx.ConnectError as error:
         # Nothing reached Telos.
         raise OperationRejected(f"Telos internal API is unreachable: {error}") from error
-    if response.status_code in (401, 403):
-        raise OperationRejected(f"Telos refused the workload credential ({response.status_code})")
-    if response.status_code == 404 and not allow_not_found:
-        raise OperationRejected(
-            f"Telos has no mirrored routine for namespace {context.namespace!r} and agent {agent_id(context)!r}")
-    if response.status_code in (409, 422):
-        raise OperationRejected(f"Telos rejected the request: {_detail(response)}")
-    if response.status_code != 404:
-        response.raise_for_status()
+    status = response.status_code
+    if status in (401, 403):
+        raise OperationRejected(f"Telos refused the workload credential ({status}: {detail(response)})")
+    if status == 404:
+        if detail(response) == SCOPE_NOT_FOUND:
+            raise OperationRejected(
+                f"Telos has no mirrored routine for namespace {context.namespace!r} and agent {agent_id(context)!r}")
+        if allow_not_found:
+            return response
+        raise OperationRejected(f"Telos found nothing at {path}: {detail(response)}")
+    if status in (400, 409, 422):
+        raise OperationRejected(f"Telos rejected the request ({status}): {detail(response)}")
+    response.raise_for_status()
     return response
 
 
@@ -93,10 +101,20 @@ def json_object(response: httpx.Response) -> dict[str, Any]:
     return data
 
 
-def _detail(response: httpx.Response) -> str:
+def detail(response: httpx.Response) -> str:
+    """FastAPI's ``detail``: a string, or a list of pydantic errors rendered as ``loc: msg``."""
     try:
         data = response.json()
     except ValueError:
         return response.text[:1000]
-    detail = data.get("detail", data) if isinstance(data, dict) else data
-    return str(detail)[:1000]
+    value = data.get("detail", data) if isinstance(data, dict) else data
+    if isinstance(value, list):
+        parts = []
+        for error in value:
+            if isinstance(error, dict) and "msg" in error:
+                loc = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+                parts.append(f"{loc}: {error['msg']}" if loc else str(error["msg"]))
+            else:
+                parts.append(str(error))
+        value = "; ".join(parts)
+    return str(value)[:1000]

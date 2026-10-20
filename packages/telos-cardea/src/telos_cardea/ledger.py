@@ -20,6 +20,9 @@ from telos_cardea._cardea import Arguments, OperationContext, Output, Reconcilia
 from telos_cardea.config import Config, load_config
 
 MAX_PAGE = 200
+MAX_HISTORY_PAGE = 20
+# Telos's by-key 404 detail; any other 404 leaves the effect uncertain.
+KEY_NOT_FOUND = "No assessment recorded under this key"
 
 
 async def list_(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -32,9 +35,10 @@ async def list_(arguments: Arguments, context: OperationContext, *, config: Conf
 
 async def history(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
                   client: httpx.AsyncClient | None = None) -> Output:
-    """Entry point ``ledger.history`` (read): every recorded assessment for one listing URL."""
-    response = await telos_api.request(config or load_config(), context, "GET", "/ledger/history",
-                                       params={"url": str(arguments["url"])}, client=client)
+    """Entry point ``ledger.history`` (read): recorded assessments for one listing URL, newest first."""
+    params = {"url": str(arguments["url"]), "offset": int(arguments.get("offset", 0)),
+              "limit": min(int(arguments.get("limit", MAX_HISTORY_PAGE)), MAX_HISTORY_PAGE)}
+    response = await telos_api.request(config or load_config(), context, "GET", "/ledger/history", params=params, client=client)
     return telos_api.json_object(response)
 
 
@@ -61,12 +65,15 @@ async def reconcile_record(arguments: Arguments, context: OperationContext, *, c
     """Entry point ``ledger.record.reconcile``: look the assessment up by its idempotency key.
 
     - 200: applied, with the stored assessment id;
-    - 404: not applied (Telos commits the key with the assessment, so no key means no record);
-    - anything else raises, leaving the effect uncertain.
+    - 404 "No assessment recorded under this key": not applied (Telos commits the key with the
+      assessment in the agent's own ledger, so no key means no record);
+    - anything else, including an unmapped-scope 404, raises, leaving the effect uncertain.
     """
     response = await telos_api.request(config or load_config(), context, "GET", f"/ledger/assessments/by-key/{context.effect_key}",
                                        allow_not_found=True, client=client)
     if response.status_code == 404:
+        if telos_api.detail(response) != KEY_NOT_FOUND:
+            raise RuntimeError(f"Telos by-key lookup returned an unexpected 404: {telos_api.detail(response)}")
         return Reconciliation(applied=False)
     data = telos_api.json_object(response)
     return Reconciliation(applied=True, output={"recorded": True, "assessment_id": str(data["assessment_id"]), "duplicate": True})

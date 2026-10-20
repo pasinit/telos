@@ -31,7 +31,8 @@
           },
           "required": [
             "reporting_date",
-            "timezone"
+            "timezone",
+            "slot_time"
           ]
         },
         "delivery_history": {

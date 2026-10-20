@@ -138,27 +138,35 @@ the `api-key` header.
 namespace), `X-Cardea-Agent` (the context's `agent_id`) and, for trigger-admitted runs, `X-Cardea-Slot-Time`
 (the context's `slot_time`). None of them ever comes from tool arguments. A call without an `agent_id` (outside
 an agent run, or on a Cardea that does not yet provide it) is rejected before any request. Telos answers 404
-when that agent has no mirrored routine, which surfaces as `OperationRejected` naming the namespace and agent.
-Missing `telos.url` or token file, an unreadable or empty token file, an unreachable listener, 401/403, 409 and
-422 are also `OperationRejected`.
+`"No mirrored routine for this agent"` when that agent has no mirrored routine, which surfaces as
+`OperationRejected` naming the namespace and agent. Missing `telos.url` or token file, an unreadable or empty
+token file, an unreachable listener, 400, 401/403, any other 404, 409 and 422 are also `OperationRejected`;
+FastAPI validation details are rendered as `field.path: message`. A 503 (Telos cannot fetch the SPIRE bundle)
+propagates as transient.
 
 **`ledger.record`.** `POST /internal/cardea/v1/ledger/assessments` with the assessment as the body and
 `Idempotency-Key: {effect_key}`. Because the scope is `["/url"]`, `effect_key` is the same for every call about one
 listing in one idempotency context (a trigger slot), so a retry or a repeated call returns the first assessment
-id (`duplicate: true`) instead of recording again. A 422 (Telos's cross-field rules, such as "verified needs every
-criterion passing") or a 409 (a business rule, such as moving an assessment out of `applied`) is
-`OperationRejected`. A timeout, a connection dropped after sending, or a 5xx propagates, and Cardea marks the effect
+id (`duplicate: true`) instead of recording again. A 422 (Telos's validation and ledger rules, such as "verified needs
+every criterion passing" or moving an assessment out of `applied`) or a 409 is `OperationRejected`. Telos
+answers a replayed key with the original id before validating the body, so a retry still succeeds after the
+evidence has aged. A timeout, a connection dropped after sending, or a 5xx propagates, and Cardea marks the effect
 `outcome_unknown`. The input schema is Telos's `PropertyAssessmentInput`; `tests/test_ledger.py` rebuilds that
 model from the Telos source and fails when the descriptors drift.
 
 **`ledger.record.reconcile`.** `GET /internal/cardea/v1/ledger/assessments/by-key/{effect_key}` with the same scope
 headers.
 - 200 means **applied**, and the output carries the stored `assessment_id` (`duplicate: true`).
-- 404 means **not applied**. Telos commits the key with the assessment, so a missing key means nothing was stored.
-- Any other status raises and the effect stays uncertain.
+- 404 `"No assessment recorded under this key"` means **not applied**. Telos commits the key with the assessment
+  in that agent's ledger, so a missing key means nothing was stored.
+- Any other status, including the unmapped-scope 404, raises and the effect stays uncertain.
 
-**`ledger.record_preview`.** The same request with `?dry_run=1`: Telos validates the assessment and stores
-nothing. It returns `{"preview": true, "recorded": false, "valid": true, "url"}`, and an invalid assessment fails
+**`ledger.list` / `ledger.history`.** `ledger.list` pages the latest assessment per listing (`limit` up to 200,
+`next_offset` null on the last page). `ledger.history` returns `{"history": [...]}` for one URL, newest first,
+at most 20 per call with `offset`.
+
+**`ledger.record_preview`.** The same request with `?dry_run=1`: Telos validates the assessment (including the
+`applied` rule) and stores nothing, not even the key. It returns `{"preview": true, "recorded": false, "valid": true, "url"}`, and an invalid assessment fails
 exactly as it would live, so shadow runs see the same errors.
 
 **`memory.briefing`.** `GET {recordatio.url}/v1/users/{user_id}/briefing?slug=…&query=…` with the recall key. It

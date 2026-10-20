@@ -17,6 +17,9 @@ from conftest import AGENT, EFFECT_KEY, PACKAGE_ROOT, TOKEN, assert_input, asser
 
 MakeContext = Callable[..., OperationContext]
 BASE = "http://telos.test:7445/internal/cardea/v1"
+# Telos's exact 404 details (telos/api/internal_cardea.py).
+SCOPE_404 = httpx.Response(404, json={"detail": "No mirrored routine for this agent"})
+KEY_404 = httpx.Response(404, json={"detail": "No assessment recorded under this key"})
 CRITERIA = ("budget", "postcode", "bedrooms", "lounge", "ceilings", "flooring", "building", "size", "floor", "availability")
 ASSESSMENT: dict[str, Any] = {
     "url": "https://www.example.com/properties/1001",
@@ -119,9 +122,24 @@ async def test_empty_token_file_is_rejected(config: Config, make_context: MakeCo
 
 
 async def test_unmapped_scope_is_a_clear_rejection(config: Config, make_context: MakeContext) -> None:
-    recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): httpx.Response(404, json={"detail": "not found"})})
+    recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): SCOPE_404})
     with pytest.raises(OperationRejected, match="no mirrored routine for namespace 'telos-owner' and agent 'telos-homey'"):
         await ledger.list_({}, make_context(), config=config, client=recorder.client())
+
+
+async def test_missing_scope_headers_400_is_rejected(config: Config, make_context: MakeContext) -> None:
+    body = {"detail": "X-Cardea-Namespace and X-Cardea-Agent are required"}
+    recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): httpx.Response(400, json=body)})
+    with pytest.raises(OperationRejected, match="required"):
+        await ledger.list_({}, make_context(), config=config, client=recorder.client())
+
+
+async def test_bundle_unavailable_503_propagates(config: Config, make_context: MakeContext) -> None:
+    recorder = Recorder({("POST", "/internal/cardea/v1/ledger/assessments"):
+                         httpx.Response(503, json={"detail": "Trust bundle unavailable"}, headers={"Retry-After": "10"})})
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        await ledger.record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
+    assert not isinstance(caught.value, OperationRejected)
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -160,7 +178,10 @@ async def test_history_passes_url(config: Config, make_context: MakeContext) -> 
     output = await ledger.history(args, make_context(), config=config, client=recorder.client())
     assert output == body
     assert_output("ledger.history", output)
-    assert recorder.requests[0].url.params["url"] == ASSESSMENT["url"]
+    assert dict(recorder.requests[0].url.params) == {"url": ASSESSMENT["url"], "offset": "0", "limit": "20"}
+    await ledger.history({**args, "offset": 20, "limit": 50}, make_context(), config=config, client=recorder.client())
+    assert recorder.requests[1].url.params["offset"] == "20" and recorder.requests[1].url.params["limit"] == "20"
+    assert not vendored.valid_arguments(load_descriptor("ledger.history"), {**args, "limit": 21})
 
 
 # ── ledger.record and its reconciler ───────────────────────────────────
@@ -191,6 +212,14 @@ async def test_record_invalid_assessment_is_rejected(config: Config, make_contex
     recorder = Recorder({("POST", "/internal/cardea/v1/ledger/assessments"): httpx.Response(422, json=detail)})
     with pytest.raises(OperationRejected, match="evidenced failing criterion"):
         await ledger.record({**ASSESSMENT, "disposition": "rejected"}, make_context(), config=config, client=recorder.client())
+
+
+async def test_validation_error_list_is_readable(config: Config, make_context: MakeContext) -> None:
+    detail = {"detail": [{"loc": ["body", "criteria", "budget", "evidence"], "msg": "String should have at least 1 character",
+                          "type": "string_too_short"}]}
+    recorder = Recorder({("POST", "/internal/cardea/v1/ledger/assessments"): httpx.Response(422, json=detail)})
+    with pytest.raises(OperationRejected, match=r"criteria\.budget\.evidence: String should have at least 1 character"):
+        await ledger.record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
 
 
 async def test_record_business_rule_conflict_is_rejected(config: Config, make_context: MakeContext) -> None:
@@ -226,9 +255,18 @@ async def test_reconcile_found_is_applied(config: Config, make_context: MakeCont
 
 
 async def test_reconcile_missing_is_not_applied(config: Config, make_context: MakeContext) -> None:
-    recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): httpx.Response(404)})
+    recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): KEY_404})
     result = await ledger.reconcile_record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
     assert result.applied is False and result.output is None
+
+
+@pytest.mark.parametrize("response", [SCOPE_404, httpx.Response(404), httpx.Response(404, json={"detail": "Not Found"})],
+                         ids=["unmapped-scope", "empty", "other"])
+async def test_reconcile_other_404_stays_uncertain(config: Config, make_context: MakeContext, response: httpx.Response) -> None:
+    recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): response})
+    with pytest.raises(Exception) as caught:
+        await ledger.reconcile_record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
+    assert "unexpected 404" in str(caught.value) or "no mirrored routine" in str(caught.value)
 
 
 async def test_reconcile_server_error_raises(config: Config, make_context: MakeContext) -> None:
