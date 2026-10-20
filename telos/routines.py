@@ -68,11 +68,14 @@ class RoutineStore:
     def update(self, routine_id: str, **kwargs) -> None:
         self.repo.update(routine_id, **kwargs)
 
-    def mark_run(self, routine_id: str) -> None:
-        self.repo.mark_run(routine_id)
+    def mark_run(self, routine_id: str, at: str | None = None) -> None:
+        self.repo.mark_run(routine_id, at)
 
-    def save_result(self, routine_id: str, response: str) -> None:
-        self.repo.save_result(routine_id, response)
+    def save_result(self, routine_id: str, response: str, *, source_task_id: str | None = None) -> bool:
+        return self.repo.save_result(routine_id, response, source_task_id=source_task_id)
+
+    def has_source_task(self, source_task_id: str) -> bool:
+        return self.repo.has_source_task(source_task_id)
 
     def recent_results(self, user_id: str, agent_slug: str, limit: int = 10) -> list[RoutineResult]:
         return self.repo.recent_results(user_id, agent_slug, limit)

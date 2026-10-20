@@ -48,6 +48,16 @@ from telos import Agent
 from telos.api.registry import AgentRegistry
 from telos.api.settings import Settings
 from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror
+from telos.cardea_ingest import (
+    IngestLedger,
+    RunPoller,
+    TranscriptSink,
+    configure_operator_alerts,
+    extract_enabled,
+    on_refusal,
+    on_sync_failure,
+)
+from telos.core.persistence import Database
 from telos.goal import Goal
 from telos.housekeeper import HOUSEKEEPER_SLUG
 from telos.mailer import EmailConfig
@@ -431,7 +441,7 @@ async def lifespan(app: FastAPI):
     )
     runner.start()
     if bridge is not None:
-        asyncio.create_task(_sync_cardea(bridge))  # noqa: RUF006
+        asyncio.create_task(_sync_cardea(bridge, _cardea_poller(bridge)))  # noqa: RUF006
     app.state.routine_runner = runner
     _agent_runtime.routine_runner = runner
     # Nightly feedback cron shares the routine runner's AsyncIOScheduler so
@@ -482,17 +492,33 @@ def _cardea_bridge() -> RoutineMirror | None:
     """Routine mirroring into Cardea whenever ``TELOS_CARDEA_URL`` and ``TELOS_CARDEA_TOKEN_FILE`` are set.
 
     Active even in mode off, so the sync removes the triggers a previous shadow/live run installed.
-    Alert hooks only log here; operator notification wires into ``on_sync_failure``/``on_refusal``.
+    Its alert hooks email the operator (``TELOS_CARDEA_OPERATOR_EMAIL``, else the nightly owner).
     """
     config = BridgeConfig.from_env()
     if not config.configured:
         if config.wants_mirroring:
             log.error("TELOS_CARDEA_MODE=%s needs TELOS_CARDEA_URL and TELOS_CARDEA_TOKEN_FILE", config.mode)
         return None
-    return RoutineMirror(CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt)
+    configure_operator_alerts(
+        _email_service.send_routine_notification,
+        os.getenv("TELOS_CARDEA_OPERATOR_EMAIL") or settings.nightly_feedback_owner_email,
+    )
+    return RoutineMirror(
+        CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt,
+        on_sync_failure=on_sync_failure, on_refusal=on_refusal,
+    )
 
 
-async def _sync_cardea(bridge: RoutineMirror, every: float = 60.0) -> None:
+def _cardea_poller(bridge: RoutineMirror) -> RunPoller:
+    """Ingests Cardea run outcomes into Telos (see telos.cardea_ingest)."""
+    transcripts = TranscriptSink(settings.recordatio_url, settings.chat_api_key) if extract_enabled() else None
+    return RunPoller(
+        bridge.client, _routine_store, IngestLedger(Database(settings.storage_root / "routines.db")),
+        settings.storage_root, _routine_executor, transcripts=transcripts,
+    )
+
+
+async def _sync_cardea(bridge: RoutineMirror, poller: RunPoller | None = None, every: float = 60.0) -> None:
     """Keep Cardea triggers equal to mirrorable routines; edits converge within a minute."""
     while True:
         try:
@@ -502,6 +528,12 @@ async def _sync_cardea(bridge: RoutineMirror, every: float = 60.0) -> None:
                 log.info("cardea routine sync: %s", changed)
         except Exception:
             log.exception("cardea routine sync failed")
+        if poller is not None:
+            try:
+                if ingested := await asyncio.to_thread(poller.poll):
+                    log.info("cardea run ingestion: %s", ingested)
+            except Exception:
+                log.exception("cardea run ingestion failed")
         await asyncio.sleep(every)
 
 
