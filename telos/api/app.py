@@ -48,6 +48,7 @@ from telos import Agent
 from telos.api.registry import AgentRegistry
 from telos.api.settings import Settings
 from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror
+from telos.goal import Goal
 from telos.housekeeper import HOUSEKEEPER_SLUG
 from telos.mailer import EmailConfig
 from telos.observability import OTelLogFormatter, init_tracing
@@ -426,7 +427,7 @@ async def lifespan(app: FastAPI):
     runner = RoutineRunner(
         _routine_store,
         _routine_executor.execute_with_email,
-        owned_elsewhere=bridge.mirrored if bridge and bridge.client.config.mode == "live" else None,
+        owned_elsewhere=bridge.owned_elsewhere if bridge else None,
     )
     runner.start()
     if bridge is not None:
@@ -468,15 +469,27 @@ def _agent_tools(user_id: str, slug: str) -> list[str]:
     return list(json.loads(tools) if isinstance(tools, str) else tools)
 
 
+def _agent_prompt(user_id: str, slug: str) -> str:
+    """The agent's live system prompt: its approved ``current.txt``, else the registry seed."""
+    path = settings.storage_root / user_id / slug / "prompts" / "current.txt"
+    if path.exists():
+        return path.read_text()
+    meta = _registry.get(user_id, slug) or {}
+    return Goal(name=meta.get("name", slug), description=meta.get("description", ""), system_prompt=meta.get("system_prompt", "")).system_prompt
+
+
 def _cardea_bridge() -> RoutineMirror | None:
-    """Routine mirroring into Cardea, when ``TELOS_CARDEA_MODE`` is shadow or live."""
+    """Routine mirroring into Cardea whenever ``TELOS_CARDEA_URL`` and ``TELOS_CARDEA_TOKEN_FILE`` are set.
+
+    Active even in mode off, so the sync removes the triggers a previous shadow/live run installed.
+    Alert hooks only log here; operator notification wires into ``on_sync_failure``/``on_refusal``.
+    """
     config = BridgeConfig.from_env()
-    if not config.enabled:
+    if not config.configured:
+        if config.wants_mirroring:
+            log.error("TELOS_CARDEA_MODE=%s needs TELOS_CARDEA_URL and TELOS_CARDEA_TOKEN_FILE", config.mode)
         return None
-    if not config.url or not config.token_file:
-        log.error("TELOS_CARDEA_MODE=%s needs TELOS_CARDEA_URL and TELOS_CARDEA_TOKEN_FILE", config.mode)
-        return None
-    return RoutineMirror(CardeaClient(config), _routine_store.list_all_enabled, _agent_tools)
+    return RoutineMirror(CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt)
 
 
 async def _sync_cardea(bridge: RoutineMirror, every: float = 60.0) -> None:
