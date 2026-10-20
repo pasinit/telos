@@ -1,6 +1,7 @@
 """Per-agent property assessments; append-only evidence independent of emails."""
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 
 from telos.core.persistence import Database
@@ -20,30 +21,68 @@ class PropertyCandidateRepo:
                 url TEXT NOT NULL, recorded_at TEXT NOT NULL, payload_json TEXT NOT NULL
             )""")
             conn.execute("CREATE INDEX IF NOT EXISTS property_assessments_url ON property_assessments(url, id)")
+            # Nullable so older ledgers stay readable; only callers that retry
+            # (Cardea's ledger.record effect) supply a key.
+            if "idempotency_key" not in {row[1] for row in conn.execute("PRAGMA table_info(property_assessments)")}:
+                conn.execute("ALTER TABLE property_assessments ADD COLUMN idempotency_key TEXT")
+            conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS property_assessments_idempotency_key
+                ON property_assessments(idempotency_key)""")
+
+    @staticmethod
+    def _merge(conn: sqlite3.Connection, url: str, assessment: dict, timestamp: str) -> dict:
+        """The payload to append for ``url``; raises ValueError when the ledger forbids it."""
+        previous = conn.execute(
+            "SELECT payload_json FROM property_assessments WHERE url=? ORDER BY id DESC LIMIT 1", (url,),
+        ).fetchone()
+        old = json.loads(previous[0]) if previous else {}
+        if old.get("disposition") == "applied" and assessment["disposition"] != "applied":
+            raise ValueError("Applied properties remain excluded; an explicit user correction is required")
+        payload = {**assessment, "url": url, "recorded_at": timestamp,
+                   "first_recorded_at": old.get("first_recorded_at", timestamp),
+                   "first_seen": old.get("first_seen") or assessment.get("first_seen_at")}
+        payload.pop("verification_deadline", None)
+        if assessment["disposition"] in ("needs_verification", "dropped"):
+            since = old.get("unresolved_since") or assessment.get("unresolved_since")
+            payload["unresolved_since"] = since
+        return payload
 
     def record(self, url: str, assessment: dict, *, now: datetime | None = None) -> dict:
+        return self.record_keyed(url, assessment, idempotency_key=None, now=now)[1]
+
+    def record_keyed(self, url: str, assessment: dict, *, idempotency_key: str | None,
+                     now: datetime | None = None) -> tuple[int, dict, bool]:
+        """Append an assessment; returns ``(assessment_id, payload, duplicate)``.
+
+        A key already on the ledger returns that row unchanged with
+        ``duplicate=True`` and writes nothing. Raises ValueError when the
+        ledger forbids the transition (applied exclusions).
+        """
         timestamp = (now or datetime.now(UTC)).isoformat()
         with self._db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            previous = conn.execute(
-                "SELECT payload_json FROM property_assessments WHERE url=? ORDER BY id DESC LIMIT 1", (url,),
-            ).fetchone()
-            old = json.loads(previous[0]) if previous else {}
-            if old.get("disposition") == "applied" and assessment["disposition"] != "applied":
-                raise ValueError("Applied properties remain excluded; an explicit user correction is required")
-            payload = {**assessment, "url": url, "recorded_at": timestamp,
-                       "first_recorded_at": old.get("first_recorded_at", timestamp),
-                       "first_seen": old.get("first_seen") or assessment.get("first_seen_at")}
-            payload.pop("verification_deadline", None)
-            if assessment["disposition"] in ("needs_verification", "dropped"):
-                since = old.get("unresolved_since") or assessment.get("unresolved_since")
-                payload["unresolved_since"] = since
-            conn.execute("INSERT INTO property_assessments(url,recorded_at,payload_json) VALUES (?,?,?)",
-                         (url, timestamp, json.dumps(payload, ensure_ascii=False)))
-        return payload
+            if idempotency_key is not None:
+                existing = conn.execute("SELECT id, payload_json FROM property_assessments WHERE idempotency_key=?",
+                                        (idempotency_key,)).fetchone()
+                if existing:
+                    return existing[0], json.loads(existing[1]), True
+            payload = self._merge(conn, url, assessment, timestamp)
+            cursor = conn.execute("INSERT INTO property_assessments(url,recorded_at,payload_json,idempotency_key) VALUES (?,?,?,?)",
+                                  (url, timestamp, json.dumps(payload, ensure_ascii=False), idempotency_key))
+            assert cursor.lastrowid is not None
+        return cursor.lastrowid, payload, False
 
-    def page(self, *, offset: int = 0, limit: int = 20) -> dict:
-        offset, limit = max(0, offset), min(max(1, limit), 20)
+    def check(self, url: str, assessment: dict) -> None:
+        """Raise ValueError when :meth:`record` would refuse ``assessment``; writes nothing."""
+        with self._db.connect() as conn:
+            self._merge(conn, url, assessment, datetime.now(UTC).isoformat())
+
+    def by_key(self, idempotency_key: str) -> int | None:
+        with self._db.connect() as conn:
+            row = conn.execute("SELECT id FROM property_assessments WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+        return row[0] if row else None
+
+    def page(self, *, offset: int = 0, limit: int = 20, max_limit: int = 20) -> dict:
+        offset, limit = max(0, offset), min(max(1, limit), max_limit)
         with self._db.connect() as conn:
             total = conn.execute("SELECT COUNT(DISTINCT url) FROM property_assessments").fetchone()[0]
             rows = conn.execute("""SELECT payload_json FROM property_assessments

@@ -120,8 +120,18 @@ services:
       # synthesizer is proposals-only and must never write to the repos.
       - .:/repos/telos:ro
       - ../recordatio:/repos/recordatio:ro
+      # The host SPIRE agent's Workload API (trust domain cardea.internal); the
+      # internal Cardea API reads JWT bundles from it to validate JWT-SVIDs.
+      # The directory, not the socket file, so an agent restart that recreates
+      # the socket stays visible.
+      - ${TELOS_SPIRE_SOCKET_DIR:-/run/spire}:/run/spire:ro
     ports:
       - "7433:7433"
+      # Internal Cardea API (TELOS_INTERNAL_API=1). Set TELOS_VPC_LISTEN to the
+      # private IP in .env and allow tcp 7445 only from the Cardea host in the
+      # cloud firewall: Docker's published ports bypass ufw. The default keeps
+      # it host-local.
+      - "${TELOS_VPC_LISTEN:-127.0.0.1}:7445:7445"
     labels:
       # Watched by the autoheal sidecar — it restarts this container whenever
       # Docker marks it unhealthy (the /healthz check is defined in the

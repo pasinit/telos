@@ -54,6 +54,11 @@ ui = [
     "playwright",
     "patchright",
     "itsdangerous>=2.0",
+    # JWT-SVID validation for the internal Cardea API (telos.api.spiffe_auth):
+    # JWT bundles come from the host's SPIRE agent over the gRPC Workload API.
+    # (py-spiffe needs protobuf>=6, which google-generativeai forbids.)
+    "grpcio>=1.62",
+    "pyjwt[crypto]>=2.8",
     "Pillow",
     "beautifulsoup4",
     "google-api-python-client>=2.140",
