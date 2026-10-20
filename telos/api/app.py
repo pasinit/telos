@@ -48,7 +48,15 @@ from telos import Agent
 from telos.api.registry import AgentRegistry
 from telos.api.settings import Settings
 from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror
-from telos.cardea_ingest import IngestLedger, RunPoller, TranscriptSink, configure_operator_alerts, extract_enabled
+from telos.cardea_ingest import (
+    IngestLedger,
+    RunPoller,
+    TranscriptSink,
+    configure_operator_alerts,
+    extract_enabled,
+    on_refusal,
+    on_sync_failure,
+)
 from telos.core.persistence import Database
 from telos.goal import Goal
 from telos.housekeeper import HOUSEKEEPER_SLUG
@@ -500,6 +508,9 @@ def _cardea_poller(bridge: RoutineMirror) -> RunPoller:
         _email_service.send_routine_notification,
         os.getenv("TELOS_CARDEA_OPERATOR_EMAIL") or settings.nightly_feedback_owner_email,
     )
+    # Operator alerts for the bridge hooks (called from the sync thread).
+    bridge.on_sync_failure = on_sync_failure
+    bridge.on_refusal = on_refusal
     transcripts = TranscriptSink(settings.recordatio_url, settings.chat_api_key) if extract_enabled() else None
     return RunPoller(
         bridge.client, _routine_store, IngestLedger(Database(settings.storage_root / "routines.db")),

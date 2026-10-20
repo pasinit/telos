@@ -4,7 +4,8 @@ Cardea runs each mirrored routine slot (see :mod:`telos.cardea_bridge`). Every s
 :class:`RunPoller` reads the supervisor's triggers and their recent slot events, fetches the run
 view of each admitted task it has not ingested yet, and once the run is terminal:
 
-- **shadow** run (any call operation ends in ``.preview``): one ``cardea_shadow_runs`` row and
+- **shadow** run (any call operation name ends in ``preview``, e.g. ``mail.preview``,
+  ``ledger.record_preview``): one ``cardea_shadow_runs`` row and
   nothing else, so shadow mode never touches agent history, memory or routine results;
 - **live** run: a routine turn in the agent's ``history.db`` (one ``tool_call``/``tool_result``
   pair per Cardea call, an ``email_delivery`` row per delivered ``mail.send``, then
@@ -20,6 +21,7 @@ Everything is idempotent on the task id (or trigger event id), so a crash or res
 nothing twice.
 """
 
+import html
 import json
 import logging
 import os
@@ -46,7 +48,6 @@ WATCHDOG_GRACE = timedelta(minutes=20)
 # Slot events older than this are recorded silently: the first poll after deploy must not
 # replay a backlog of FAILED emails for slots the user has already lived through.
 NOTIFY_WINDOW = timedelta(hours=6)
-SYNC_ALERT_AFTER = 3
 _TOOL_FOR = {operation: tool for tool, operation in DEFAULT_OPERATIONS.items()}
 
 
@@ -61,7 +62,7 @@ class FailureNotifier(Protocol):
 
 
 def is_shadow(operations: Iterable[str]) -> bool:
-    return any(name.endswith(".preview") for name in operations)
+    return any(name.endswith("preview") for name in operations)
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -361,26 +362,37 @@ _operator_alert: Callable[[str, str], object] | None = None
 
 
 def configure_operator_alerts(send: Callable[[str, str, str], object], recipient: str) -> None:
-    """Route :func:`on_sync_failure` to ``send(to, subject, body)``; an empty recipient disables it."""
+    """Route the operator hooks below to ``send(to, subject, body)``; an empty recipient disables them."""
     global _operator_alert
     _operator_alert = (lambda subject, body: send(recipient, subject, body)) if recipient else None
 
 
-def on_sync_failure(count: int, error: str) -> None:
-    """Called by the bridge with the consecutive Cardea sync failure count; alerts the operator once at 3."""
-    if count != SYNC_ALERT_AFTER:
-        return
+def _alert(subject: str, body: str) -> None:
     if _operator_alert is None:
-        log.error("cardea sync failed %d times in a row (no operator email configured): %s", count, error)
+        log.error("cardea operator alert (no operator email configured): %s", subject)
         return
     try:
-        _operator_alert(
-            f"Telos: Cardea sync failing ({count} consecutive failures)",
-            f"<p>Telos could not sync with Cardea {count} times in a row.</p><p>Last error: {error}</p>"
-            "<p>Mirrored routines may not be running or reporting. Check the Cardea host.</p>",
-        )
+        _operator_alert(subject, body)
     except Exception:
         log.exception("cardea operator alert failed")
+
+
+def on_sync_failure(count: int, error: str) -> None:
+    """Bridge hook: Cardea sync failed ``count`` times in a row. The bridge decides when to call it."""
+    _alert(
+        f"Telos: Cardea sync failing ({count} consecutive failures)",
+        f"<p>Telos could not sync with Cardea {count} times in a row.</p><p>Last error: {html.escape(error)}</p>"
+        "<p>Mirrored routines may not be running or reporting. Check the Cardea host.</p>",
+    )
+
+
+def on_refusal(routine_id: str, reason: str) -> None:
+    """Bridge hook: a live routine is running in Telos instead of Cardea."""
+    _alert(
+        f"Telos: routine {routine_id} not running on Cardea",
+        f"<p>Routine <code>{html.escape(routine_id)}</code> is running in Telos instead of Cardea.</p>"
+        f"<p>Reason: {html.escape(reason)}</p>",
+    )
 
 
 def extract_enabled() -> bool:
@@ -388,4 +400,4 @@ def extract_enabled() -> bool:
 
 
 __all__ = ["IngestLedger", "RunPoller", "TranscriptSink", "configure_operator_alerts", "extract_enabled",
-           "is_shadow", "on_sync_failure"]
+           "is_shadow", "on_refusal", "on_sync_failure"]

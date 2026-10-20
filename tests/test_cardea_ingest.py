@@ -10,7 +10,15 @@ import httpx
 import pytest
 
 from telos import cardea_ingest
-from telos.cardea_ingest import IngestLedger, RunPoller, TranscriptSink, configure_operator_alerts, on_sync_failure
+from telos.cardea_ingest import (
+    IngestLedger,
+    RunPoller,
+    TranscriptSink,
+    configure_operator_alerts,
+    is_shadow,
+    on_refusal,
+    on_sync_failure,
+)
 from telos.core.persistence import Database
 from telos.log import ConversationLog
 from telos.routines import RoutineStore
@@ -138,6 +146,28 @@ def test_shadow_run_stored_only_in_shadow_table(env):
     assert env["store"].recent_results("sam", "scout") == []
     assert env["store"].get(rid).last_run is None
     env["transcripts"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("operations", "shadow"),
+    [
+        (["listings.rightmove_search", "mail.preview"], True),
+        (["ledger.list", "ledger.record_preview"], True),
+        (["ledger.list", "ledger.record", "mail.send"], False),
+        ([], False),
+    ],
+)
+def test_shadow_rule(operations, shadow):
+    assert is_shadow(operations) is shadow
+
+
+def test_ledger_preview_run_is_shadow(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-l")])]
+    env["cardea"].runs["task-l"] = run(calls=[call("ledger.list"), call("ledger.record_preview", op_id="op-02")])
+
+    assert env["poller"].poll() == {"task-l": "shadow:succeeded"}
+    assert not env["history"].exists() and env["store"].recent_results("sam", "scout") == []
 
 
 def test_shadow_failure_is_logged_and_stored_not_emailed(env):
@@ -306,15 +336,18 @@ def test_transcript_sink_posts_contract_body():
                                            "source": "cardea", "idempotency_key": "cardea:task-1"}
 
 
-def test_operator_alert_fires_at_third_consecutive_failure(monkeypatch):
+def test_operator_alerts_deliver_each_bridge_hook_call():
     sent = MagicMock()
     configure_operator_alerts(sent, "ops@example.test")
     try:
-        for count in range(1, 6):
-            on_sync_failure(count, "ConnectError: refused")
-        sent.assert_called_once()
-        to, subject, body = sent.call_args.args
+        on_sync_failure(3, "ConnectError: refused")
+        on_refusal("73103f92fad9", "unmapped tools: <gdocs_read>")
+        assert sent.call_count == 2
+        to, subject, body = sent.call_args_list[0].args
         assert to == "ops@example.test" and "3 consecutive" in subject and "refused" in body
+        _, subject, body = sent.call_args_list[1].args
+        assert "73103f92fad9" in subject and "&lt;gdocs_read&gt;" in body
     finally:
         configure_operator_alerts(sent, "")
     assert cardea_ingest._operator_alert is None  # noqa: SLF001
+    on_sync_failure(6, "still down")  # unconfigured: logged, not raised
