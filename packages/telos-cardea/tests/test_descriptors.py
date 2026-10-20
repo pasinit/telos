@@ -16,6 +16,7 @@ EXPECTED = {
     "mail.preview": "read",
     "listings.rightmove_search": "read",
     "listings.zoopla_search": "read",
+    "listings.onthemarket_search": "read",
     "listings.agency_search": "read",
     "web.search": "read",
     "browser.open": "read",

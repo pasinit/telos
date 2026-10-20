@@ -9,9 +9,14 @@ the small host, so here the order is sequential and the browser is opt-in:
 2. the configured unblocker proxy (``TELOS_UNBLOCKER_URL``), if any;
 3. a headless patchright render, only when ``browser_fallback`` is enabled and
    the ``browser`` extra is installed (confined-worker profile).
+
+``fetch_html_js`` backs agencies whose cards are filled in client-side: the
+browser when it is enabled and installed, else the unblocker with JavaScript
+rendering, else ``FetchError`` so the search reports ``unavailable``.
 """
 
 import asyncio
+import importlib.util
 import json
 import logging
 import re
@@ -44,6 +49,16 @@ _WEAK_BOT = ("captcha", "please verify", "bot detection", "access denied", "enab
 
 class FetchError(RuntimeError):
     """No usable page could be fetched; not evidence of empty results."""
+
+
+def browser_available() -> bool:
+    """Whether the ``browser`` extra (patchright) is installed."""
+    return importlib.util.find_spec("patchright") is not None
+
+
+def render_js_template(template: str) -> str:
+    """Turn on JavaScript rendering in an unblocker template that switches it off (ScrapingBee's ``render_js``)."""
+    return re.sub(r"([?&]render_js=)(?:false|0)(?=&|$)", r"\1true", template, flags=re.IGNORECASE)
 
 
 def visible_text(html: str) -> str:
@@ -100,9 +115,9 @@ class Fetcher:
             return unblocked
         if self._config.unblocker_url:
             reasons.append("unblocker failed")
-        if self._config.browser_fallback:
+        if self._config.browser_fallback and browser_available():
             try:
-                return await self.fetch_html_js(url)
+                return await self._render(url)
             except Exception as error:
                 reasons.append(f"browser {type(error).__name__}")
         raise FetchError("; ".join(reasons))
@@ -121,6 +136,25 @@ class Fetcher:
                 return None
 
     async def fetch_html_js(self, url: str) -> str:
+        """Rendered HTML, for pages whose content JavaScript fills in; never the bare server HTML."""
+        reasons: list[str] = []
+        if not self._config.browser_fallback:
+            reasons.append("browser fallback disabled")
+        elif not browser_available():
+            reasons.append("browser extra not installed")
+        else:
+            try:
+                return await self._render(url)
+            except Exception as error:
+                reasons.append(f"browser {type(error).__name__}")
+        unblocked = await self._unblocker(url, render_js=True)
+        if unblocked is not None:
+            return unblocked
+        reasons.append("unblocker failed" if self._config.unblocker_url else "no unblocker configured")
+        raise FetchError("needs JavaScript rendering: " + "; ".join(reasons))
+
+    @staticmethod
+    async def _render(url: str) -> str:
         from telos_cardea.browser import render
 
         return await render(url)
@@ -132,10 +166,12 @@ class Fetcher:
         response: Any = curl_requests.get(url, impersonate="chrome", timeout=timeout, allow_redirects=True)
         return str(response.text), int(response.status_code)
 
-    async def _unblocker(self, url: str) -> str | None:
+    async def _unblocker(self, url: str, render_js: bool = False) -> str | None:
         template = self._config.unblocker_url.strip()
         if "{url}" not in template:
             return None
+        if render_js:
+            template = render_js_template(template)
         proxied = template.replace("{url}", quote(url, safe=""))
         try:
             html, status = await asyncio.to_thread(self._curl, proxied, self._config.unblocker_timeout)

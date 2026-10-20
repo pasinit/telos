@@ -1,4 +1,4 @@
-"""``listings.*`` read operations: Rightmove, Zoopla and estate-agent searches.
+"""``listings.*`` read operations: Rightmove, Zoopla, OnTheMarket and estate-agent searches.
 
 URL building follows ``telos.domain.tools.rightmove`` / ``zoopla``; parsing is the
 vendored Telos code. An unusable fetch is returned as ``status: "unavailable"``
@@ -9,10 +9,10 @@ never mistakes it for zero inventory.
 import asyncio
 import re
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from telos_cardea._cardea import Arguments, OperationContext, Output
-from telos_cardea._vendor import agencies, rightmove, zoopla
+from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
 from telos_cardea._vendor.agency_types import AGENCY_LABELS, SearchFilters
 from telos_cardea.config import Config, load_config
 from telos_cardea.fetch import Fetcher
@@ -77,6 +77,26 @@ def zoopla_urls(location: str, min_beds: int | None = None, max_price: int | Non
     return [f"https://www.zoopla.co.uk/{kind}/property/{p}/" + (f"?{urlencode(params)}" if params else "") for p in paths]
 
 
+def onthemarket_url(location: str, min_beds: int | None = None, max_beds: int | None = None, max_price: int | None = None,
+                    for_sale: bool = True) -> str:
+    kind = "for-sale" if for_sale else "to-rent"
+    params: dict[str, int] = {}
+    if min_beds is not None:
+        params["min-bedrooms"] = min_beds
+    if max_beds is not None:
+        params["max-bedrooms"] = max_beds
+    if max_price is not None:
+        params["max-price"] = max_price
+    return f"https://www.onthemarket.com/{kind}/property/{_location_slug(location)}/" + (f"?{urlencode(params)}" if params else "")
+
+
+def _page_number(url: str) -> int:
+    try:
+        return int(parse_qs(urlparse(url).query).get("page", ["1"])[0])
+    except ValueError:
+        return 0
+
+
 def _results(site: str, url: str, structured: dict[str, Any] | None) -> Output | None:
     if not structured or structured.get("kind") != "search_results":
         return None
@@ -129,6 +149,61 @@ async def zoopla_search(arguments: Arguments, context: OperationContext, *, conf
     return _unavailable("zoopla", urls[-1], reason)
 
 
+async def onthemarket_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
+                             fetcher: Fetcher | None = None) -> Output:
+    """Entry point ``listings.onthemarket_search``: server HTML, following only observed pagination links."""
+    fetcher = fetcher or Fetcher(config or load_config())
+    url = onthemarket_url(arguments["location"], arguments.get("min_beds"), arguments.get("max_beds"), arguments.get("max_price"),
+                          arguments.get("for_sale", True))
+    max_pages = int(arguments.get("max_pages", 1))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PORTAL_SEARCH_TIMEOUT_S
+    listings: dict[str, dict[str, Any]] = {}
+    visited: list[str] = []
+    warnings: list[str] = []
+    total: int | None = None
+    pending: str | None = url
+    stop_reason = "no_observed_next_link"
+    while pending is not None:
+        if len(visited) >= max_pages:
+            stop_reason = "max_pages"
+            break
+        page_url = pending
+        structured: dict[str, Any] | None = None
+        try:
+            html = await asyncio.wait_for(fetcher.fetch_html(page_url), timeout=max(0.0, deadline - loop.time()))
+        except TimeoutError:
+            failure = f"timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s"
+        except Exception as error:
+            failure = f"fetch failed ({error})"
+        else:
+            structured = onthemarket.enrich(page_url, html)
+            failure = "no recognised search results"
+        if not structured or structured.get("kind") != "search_results":
+            if not visited:
+                return _unavailable("onthemarket", url, failure)
+            warnings.append(f"Failed to read {page_url} ({failure}); retained earlier results")
+            stop_reason = "page_failed"
+            break
+        data = structured["data"]
+        visited.append(page_url)
+        if total is None and isinstance(data.get("total"), int):
+            total = data["total"]
+        for card in data.get("results", []):
+            if isinstance(card, dict):
+                listings.setdefault(str(card.get("id")), card)
+        current = _page_number(page_url)
+        pending = next((link for link in data.get("pagination", []) if _page_number(link) == current + 1 and link not in visited), None)
+    out: Output = {"site": "onthemarket", "search_url": url, "listings": list(listings.values()), "pages_visited": visited,
+                   "pending_urls": [pending] if pending is not None else [], "warnings": warnings, "stop_reason": stop_reason,
+                   "status": "partial" if warnings else ("results" if listings else "no_matches"),
+                   "caveat": "Search cards and recency labels do not confirm current availability; verify on detail pages."}
+    if total is not None:
+        out["total"] = total
+        out["truncated"] = len(listings) < total
+    return out
+
+
 async def agency_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
                         fetcher: Fetcher | None = None) -> Output:
     """Entry point ``listings.agency_search``."""
@@ -145,14 +220,19 @@ async def agency_search(arguments: Arguments, context: OperationContext, *, conf
         report = await asyncio.wait_for(
             impl.search_report(location, for_sale, filters, max_pages=int(arguments.get("max_pages", 5)),
                                fetch_html=fetcher.fetch_html, fetch_json=fetcher.fetch_json,
-                               fetch_html_js=fetcher.fetch_html_js if config.browser_fallback else None),
+                               # Used only by agencies whose cards JavaScript fills in (js_search):
+                               # browser, else rendering unblocker, else unavailable.
+                               fetch_html_js=fetcher.fetch_html_js),
             timeout=AGENCY_SEARCH_TIMEOUT_S,
         )
     except TimeoutError:
         return {**base, "status": "unavailable", "reason": f"timed out after {int(AGENCY_SEARCH_TIMEOUT_S)}s",
                 "listings": [], "caveat": UNAVAILABLE_CAVEAT}
     except Exception as error:  # AgencySearchUnavailable, fetch failures, parser errors
-        return {**base, "status": "unavailable", "reason": str(error) or type(error).__name__, "listings": [], "caveat": UNAVAILABLE_CAVEAT}
+        reason = str(error) or type(error).__name__
+        if error.__cause__ is not None and str(error.__cause__):
+            reason += f": {error.__cause__}"
+        return {**base, "status": "unavailable", "reason": reason, "listings": [], "caveat": UNAVAILABLE_CAVEAT}
     hits = [hit.to_dict() for hit in report.hits]
     status = "partial" if report.warnings or report.pending_urls else ("results" if hits else "no_matches")
     return {**base, "status": status, "listings": hits, "pages_visited": report.pages_visited, "pending_urls": report.pending_urls,

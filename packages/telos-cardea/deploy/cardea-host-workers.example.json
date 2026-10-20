@@ -175,6 +175,32 @@
         "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
         "TELOS_CARDEA_BROWSER_FALLBACK": "1"
       }
+    },
+    "telos-onthemarket": {
+      "argv": [
+        "/opt/cardea/apps/api/.venv/bin/python",
+        "-P",
+        "-s",
+        "-m",
+        "cardea.hosts.operation_worker",
+        "listings.onthemarket_search"
+      ],
+      "profiles": [
+        "browser"
+      ],
+      "read_only": [
+        "/opt/cardea/apps/api/.venv",
+        "/opt/cardea/apps/api/src",
+        "/opt/ms-playwright",
+        "/etc/ssl/certs",
+        "/etc/fonts/fonts.conf",
+        "/etc/fonts/conf.d"
+      ],
+      "env": {
+        "PYTHONPATH": "/opt/cardea/apps/api/src",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
+        "TELOS_CARDEA_BROWSER_FALLBACK": "1"
+      }
     }
   }
 }

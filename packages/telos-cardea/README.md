@@ -15,6 +15,7 @@ Cardea installs it into its service environment on its own host.
 | `mail.preview` | (shadow mode) | read | none | none | in-process |
 | `listings.rightmove_search` | `rightmove_search` | read | none | none | in-process (browser fallback: confined) |
 | `listings.zoopla_search` | `zoopla_search` | read | none | none | in-process (browser fallback: confined) |
+| `listings.onthemarket_search` | (new; Telos parses OnTheMarket pages in `browser_open`) | read | none | none | in-process (browser fallback: confined) |
 | `listings.agency_search` | `agency_search` | read | none | none | in-process (browser fallback: confined) |
 | `web.search` | `web_search` | read | none | none | in-process |
 | `browser.open` | `browser_open` | read | none | none | **confined worker** (`descriptors/confined/`) |
@@ -41,9 +42,17 @@ runs in its own systemd transient unit + bubblewrap sandbox with a memory cap. S
 
 The listing operations do not start a browser by default. They fetch with `curl_cffi`, then use the
 unblocker proxy if one is configured. A browser render runs only when `browser_fallback` is enabled, which
-also needs the confined profile; the `listings.*` variants in `descriptors/confined/` enable it. Without it,
-agencies whose cards are filled in client-side (Dexters prices) use their server HTML, and anti-bot walls
-report `status: "unavailable"`.
+also needs the confined profile; the `listings.*` variants in `descriptors/confined/` enable it. Anti-bot
+walls report `status: "unavailable"`.
+
+Agencies whose cards are filled in client-side (`js_search`: Dexters, KFH) never use the bare server HTML, which
+lacks those fields. Their search pages come from the browser when `browser_fallback` is on and the extra is
+installed, else from the unblocker with JavaScript rendering forced on (a `render_js=false` in the template
+becomes `true`), else the search reports `status: "unavailable"` with the reason.
+
+`listings.onthemarket_search` reads OnTheMarket's server HTML (its Next.js state carries the cards), so it
+needs no browser. It follows only pagination links observed on the page, up to `max_pages` (default 1, 30 cards
+a page).
 
 Browser calls are read-only at the network level, in and out of the sandbox:
 - the context blocks service workers;
@@ -298,12 +307,15 @@ reason instead of failing, so the agent never reads the gap as zero inventory.
 
 ## Dependencies cut from Telos
 
-- The HTML parsers (`telos/transport/browser/{rightmove,zoopla,agencies}.py`, `telos/domain/agencies.py`) are
-  copied verbatim into `telos_cardea/_vendor/`. Only one import line differs. `tests/test_vendor_sync.py` fails
-  when a copy drifts.
+- The HTML parsers (`telos/transport/browser/{rightmove,zoopla,onthemarket,agencies}.py`, `telos/domain/agencies.py`)
+  are copied verbatim into `telos_cardea/_vendor/`. Two rewrites differ, both listed in `_vendor/__init__.py`:
+  - one import line;
+  - one fix in `onthemarket.py`. Live pages (checked 2026-10-20) nest the state under `props.pageProps`, which
+    Telos's parser misses. The rewrite is the code of pasinit/telos#15; drop it and re-copy once that lands.
+
+  `tests/test_vendor_sync.py` fails when a copy drifts.
 - `telos.transport.browser.fetcher` runs a curl-vs-Chromium race on every fetch. Here it is replaced by a
-  sequential curl → unblocker → optional browser fetch. Image download, `Pillow` and OnTheMarket
-  enrichment are dropped. Outputs carry structured listings, not page text or images.
+  sequential curl → unblocker → optional browser fetch. Image download and `Pillow` are dropped. Outputs carry structured listings, not page text or images.
 - `telos.mailer` and `EmailNotificationService` are replaced by a direct `smtplib` sender with stage-aware
   error mapping. The Telos `Settings` object is replaced by environment variables and a TOML file.
 - `ToolContext.user_id` and `agent_slug` (from the user registry) are replaced, for `memory.*`, by a
