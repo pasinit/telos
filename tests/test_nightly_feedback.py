@@ -31,13 +31,17 @@ class _StubClient:
     """Stand-in for RecordatioFeedbackClient. Records feedback posts; returns
     canned reads."""
 
-    def __init__(self, *, search_results: list | None = None) -> None:
+    def __init__(self, *, search_results: list | None = None, feedback: dict | None = None) -> None:
         self.posted: list[dict] = []
         self.closed = False
         self._search = search_results or []
+        self._feedback = feedback or {}
 
     async def aclose(self) -> None:
         self.closed = True
+
+    async def get_memory_feedback(self, user_id):
+        return {"user_id": user_id, "records": self._feedback.get(user_id, [])}
 
     async def list_units(self, user_id, *, day=None, limit=200):
         return {"user_id": user_id, "day": day, "count": 0, "units": []}
@@ -227,7 +231,41 @@ async def test_service_full_run_maps_reduces_and_digests(tmp_path: Path) -> None
     to, subj, body = emails[0]
     assert to == "owner@example.com" and "2026-07-31" in subj
     assert "https://telos.example/nightly" in body and "score 4/5" in body
+    assert "queue clear" in body  # no pending backlog → reassuring clear line
     assert client.closed
+
+
+async def test_digest_surfaces_pending_memory_backlog(tmp_path: Path) -> None:
+    """Regression: the analyst's reversible ops pile up pending behind a
+    dashboard nobody visits. The digest must push the backlog (count + oldest
+    age + per-type breakdown) so it becomes a visible, actionable line."""
+    at = datetime(2026, 7, 31, 9, 0)
+    _make_agent(tmp_path, "dana", "jobber", n_turns=1, at=at)
+    records = [
+        {"day": "2026-07-29", "created_at": "2026-07-29T02:00:00+00:00", "summary": "s", "findings": [],
+         "ops": [
+             {"op_type": "tombstone", "status": "pending"},
+             {"op_type": "merge", "status": "applied"},  # decided → must be excluded
+         ]},
+        {"day": "2026-07-15", "created_at": "2026-07-15T02:00:00+00:00", "summary": "s", "findings": [],
+         "ops": [
+             {"op_type": "tombstone", "status": "pending"},
+             {"op_type": "correct", "status": "pending"},
+         ]},
+    ]
+    client = _StubClient(feedback={"dana": records})
+    analyst = _ScriptedAnalyst(agent_payload=_AGENT_PAYLOAD, memory_payload=_MEMORY_PAYLOAD)
+    emails: list = []
+    svc = _service(tmp_path, analyst, client, emails)
+
+    await svc.run_for_day(DAY)
+
+    _, _, body = emails[0]
+    assert "Memory-hygiene queue" in body
+    assert "<strong>3</strong> op(s) pending" in body   # 3 pending; the applied op is excluded
+    assert "across 1 user(s)" in body
+    assert "oldest 16 day(s)" in body                   # 2026-07-31 − 2026-07-15
+    assert "2 tombstone" in body and "1 correct" in body
 
 
 async def test_service_isolates_a_failing_agent(tmp_path: Path) -> None:
