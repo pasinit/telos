@@ -622,3 +622,66 @@ def test_changing_a_run_budget_updates_the_trigger(cardea: Cardea):
     richer = RoutineMirror(cardea.client(max_cost_usd=8.0), lambda: [routine()], lambda user, slug: TOOLS)
     assert richer.sync() == {"telos.73103f92fad9": "updated"}
     assert cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["max_cost_usd"] == 8.0
+
+
+def kernel_client(handler, tmp_path: Path) -> CardeaClient:
+    token = tmp_path / "jwt"
+    token.write_text("svid\n")
+    return CardeaClient(BridgeConfig(url="https://c", token_file=str(token)), transport=httpx.MockTransport(handler))
+
+
+def test_run_joins_every_page_of_calls(tmp_path: Path):
+    pages = {
+        None: {"task_id": "t", "state": "succeeded", "calls": [{"operation_id": "ctx-01"}], "calls_total": 3, "calls_next": "ctx-01"},
+        "ctx-01": {"task_id": "t", "state": "succeeded", "calls": [{"operation_id": "call-0001"}], "calls_total": 3, "calls_next": "call-0001"},
+        "call-0001": {"task_id": "t", "state": "succeeded", "calls": [{"operation_id": "call-0002"}], "calls_total": 3, "calls_next": None},
+    }
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v0.2/tasks/t/run"
+        after = request.url.params.get("after")
+        seen.append(after)
+        return httpx.Response(200, json=pages[after])
+
+    run_view = kernel_client(handler, tmp_path).run("t")
+    assert [c["operation_id"] for c in run_view["calls"]] == ["ctx-01", "call-0001", "call-0002"]
+    assert seen == [None, "ctx-01", "call-0001"] and run_view["calls_next"] is None
+
+
+def test_operation_returns_the_full_receipt(tmp_path: Path):
+    receipt = {"request": {"arguments": {"arguments": {"to": "sam@example.com"}}}, "result": {"output": {"message_id": "<m>"}}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v0.2/tasks/t/operations/call-0002"
+        return httpx.Response(200, json={"schema_version": "0.2", "receipt": receipt})
+
+    assert kernel_client(handler, tmp_path).operation("t", "call-0002") == receipt
+
+
+def test_output_inline_and_chunked(tmp_path: Path):
+    import base64
+    import hashlib
+
+    document = {"text": "Long digest. " * 3000, "turns": 9}
+    data = json.dumps(document).encode()
+    state = {"omitted": False, "sha": hashlib.sha256(data).hexdigest()}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v0.2/tasks/t/output":
+            if not state["omitted"]:
+                return httpx.Response(200, json={"content": document, "content_omitted": False})
+            return httpx.Response(200, json={"content": None, "content_omitted": True, "content_bytes": len(data)})
+        offset = int(request.url.params["offset"])
+        end = min(offset + 10000, len(data))
+        return httpx.Response(200, json={"total_bytes": len(data), "sha256": state["sha"], "offset": offset,
+                                         "next_offset": end if end < len(data) else None,
+                                         "data_base64": base64.b64encode(data[offset:end]).decode()})
+
+    client = kernel_client(handler, tmp_path)
+    assert client.output("t") == document
+    state["omitted"] = True
+    assert client.output("t") == document
+    state["sha"] = "0" * 64
+    with pytest.raises(ValueError, match="sha256"):
+        client.output("t")
