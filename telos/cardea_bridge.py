@@ -87,6 +87,8 @@ EMAIL_LINE = "When you are done, email the user one summary of the results."
 _SAYS_ONE_EMAIL = re.compile(r"\b(one|a single|exactly one)\s+(summary\s+)?e-?mail\b|\be-?mail the user (one|a single)\b", re.IGNORECASE)
 _SAFE = re.compile(r"[^A-Za-z0-9._:-]")
 _MAX_INSTRUCTIONS = 65536
+# memory.briefing's inputSchema maxLength (packages/telos-cardea/descriptors/memory.briefing.json).
+BRIEFING_QUERY_CHARS = 4000
 
 
 def _json_env(name: str) -> Any:
@@ -275,10 +277,16 @@ def request_bytes(spec: dict[str, Any]) -> int:
 
 
 def context_calls(routine: Routine, operations: list[str]) -> list[dict[str, Any]]:
-    """C2 context operations Cardea runs before each attempt (C4)."""
-    calls: list[dict[str, Any]] = [{"operation": "telos.routine_context", "arguments": {}}]
-    if "memory.recall" in operations:
-        calls.append({"operation": "memory.briefing", "arguments": {"query": routine.description[:2000]}})
+    """C2 context operations Cardea runs before each attempt (C4).
+
+    ``memory.briefing`` is always included: every Telos turn gets Recordatio's briefing,
+    whether or not the agent has memory tools. Its query is capped at the operation's 4000 chars.
+    """
+    query = (routine.description.strip() or routine.name or routine.id)[:BRIEFING_QUERY_CHARS]
+    calls: list[dict[str, Any]] = [
+        {"operation": "telos.routine_context", "arguments": {}},
+        {"operation": "memory.briefing", "arguments": {"query": query}},
+    ]
     if any(op.startswith("ledger.") for op in operations):
         calls.append({"operation": "ledger.list", "arguments": {"limit": 50}})
     return calls
