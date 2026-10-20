@@ -139,14 +139,15 @@ namespace), `X-Cardea-Agent` (the context's `agent_id`) and, for trigger-admitte
 (the context's `slot_time`). None of them ever comes from tool arguments. A call without an `agent_id` (outside
 an agent run, or on a Cardea that does not yet provide it) is rejected before any request. Telos answers 404
 when that agent has no mirrored routine, which surfaces as `OperationRejected` naming the namespace and agent.
-Missing `telos.url` or token file, an unreadable or empty token file, an unreachable listener, 401/403 and
+Missing `telos.url` or token file, an unreadable or empty token file, an unreachable listener, 401/403, 409 and
 422 are also `OperationRejected`.
 
 **`ledger.record`.** `POST /internal/cardea/v1/ledger/assessments` with the assessment as the body and
 `Idempotency-Key: {effect_key}`. Because the scope is `["/url"]`, `effect_key` is the same for every call about one
 listing in one idempotency context (a trigger slot), so a retry or a repeated call returns the first assessment
 id (`duplicate: true`) instead of recording again. A 422 (Telos's cross-field rules, such as "verified needs every
-criterion passing") is `OperationRejected`. A timeout or a 5xx propagates, and Cardea marks the effect
+criterion passing") or a 409 (a business rule, such as moving an assessment out of `applied`) is
+`OperationRejected`. A timeout, a connection dropped after sending, or a 5xx propagates, and Cardea marks the effect
 `outcome_unknown`. The input schema is Telos's `PropertyAssessmentInput`; `tests/test_ledger.py` rebuilds that
 model from the Telos source and fails when the descriptors drift.
 

@@ -193,11 +193,20 @@ async def test_record_invalid_assessment_is_rejected(config: Config, make_contex
         await ledger.record({**ASSESSMENT, "disposition": "rejected"}, make_context(), config=config, client=recorder.client())
 
 
-@pytest.mark.parametrize("failure", ["timeout", "500"])
+async def test_record_business_rule_conflict_is_rejected(config: Config, make_context: MakeContext) -> None:
+    detail = {"detail": "Applied properties remain excluded; an explicit user correction is required"}
+    recorder = Recorder({("POST", "/internal/cardea/v1/ledger/assessments"): httpx.Response(409, json=detail)})
+    with pytest.raises(OperationRejected, match="remain excluded"):
+        await ledger.record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
+
+
+@pytest.mark.parametrize("failure", ["timeout", "dropped", "500"])
 async def test_record_uncertain_failures_propagate(config: Config, make_context: MakeContext, failure: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if failure == "timeout":
             raise httpx.ReadTimeout("timed out", request=request)
+        if failure == "dropped":
+            raise httpx.RemoteProtocolError("server disconnected without sending a response", request=request)
         return httpx.Response(500)
 
     with pytest.raises(httpx.HTTPError) as caught:

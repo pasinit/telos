@@ -54,9 +54,10 @@ async def request(config: Config, context: OperationContext, method: str, path: 
                   client: httpx.AsyncClient | None = None) -> httpx.Response:
     """One authenticated call. Refusals Telos is certain about raise ``OperationRejected``.
 
-    - missing configuration, an unreachable listener, 401/403, 404 (unmapped scope) and 422 are
-      certain to have had no effect, so they raise ``OperationRejected``;
-    - timeouts and 5xx propagate, so Cardea leaves an effect uncertain for its reconciler.
+    - missing configuration, an unreachable listener, 401/403, 404 (unmapped scope), 409 (a business
+      rule, such as moving an assessment out of ``applied``) and 422 are certain to have had no
+      effect, so they raise ``OperationRejected``;
+    - timeouts, dropped connections and 5xx propagate, so Cardea leaves an effect uncertain for its reconciler.
 
     ``allow_not_found`` returns a 404 to the caller instead (the reconciler's by-key lookup).
     """
@@ -78,7 +79,7 @@ async def request(config: Config, context: OperationContext, method: str, path: 
     if response.status_code == 404 and not allow_not_found:
         raise OperationRejected(
             f"Telos has no mirrored routine for namespace {context.namespace!r} and agent {agent_id(context)!r}")
-    if response.status_code == 422:
+    if response.status_code in (409, 422):
         raise OperationRejected(f"Telos rejected the request: {_detail(response)}")
     if response.status_code != 404:
         response.raise_for_status()
