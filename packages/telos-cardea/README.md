@@ -308,12 +308,8 @@ reason instead of failing, so the agent never reads the gap as zero inventory.
 ## Dependencies cut from Telos
 
 - The HTML parsers (`telos/transport/browser/{rightmove,zoopla,onthemarket,agencies}.py`, `telos/domain/agencies.py`)
-  are copied verbatim into `telos_cardea/_vendor/`. Two rewrites differ, both listed in `_vendor/__init__.py`:
-  - one import line;
-  - one fix in `onthemarket.py`. Live pages (checked 2026-10-20) nest the state under `props.pageProps`, which
-    Telos's parser misses. The rewrite is the code of pasinit/telos#15; drop it and re-copy once that lands.
-
-  `tests/test_vendor_sync.py` fails when a copy drifts.
+  are copied verbatim into `telos_cardea/_vendor/`. Only one import line differs. `tests/test_vendor_sync.py` fails
+  when a copy drifts.
 - `telos.transport.browser.fetcher` runs a curl-vs-Chromium race on every fetch. Here it is replaced by a
   sequential curl → unblocker → optional browser fetch. Image download and `Pillow` are dropped. Outputs carry structured listings, not page text or images.
 - `telos.mailer` and `EmailNotificationService` are replaced by a direct `smtplib` sender with stage-aware
