@@ -62,13 +62,16 @@ def _state(soup: BeautifulSoup) -> dict:
         data = json.loads(script.get_text())
     except (ValueError, TypeError):
         return {}
-    if isinstance(data, dict) and isinstance(data.get("props"), dict) and "pageProps" in data["props"]:
-        data = {"props": data["props"]["pageProps"]}  # telos-cardea: Next.js pageProps nesting
-    for key in ("props", "initialReduxState"):
-        if not isinstance(data, dict):
-            return {}
-        data = data.get(key)
-    return data if isinstance(data, dict) else {}
+    props = data.get("props") if isinstance(data, dict) else None
+    if not isinstance(props, dict):
+        return {}
+    # Current pages nest the state under pageProps; older ones put it beside pageProps.
+    page_props = props.get("pageProps")
+    if isinstance(page_props, dict) and "initialReduxState" in page_props:
+        state = page_props["initialReduxState"]
+    else:
+        state = props.get("initialReduxState")
+    return state if isinstance(state, dict) else {}
 
 
 def _observed_url(base: str, href: str) -> str | None:

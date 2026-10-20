@@ -21,7 +21,7 @@ def otm_page(ids: list[int], total: int, pages: tuple[int, ...] = (), nested: bo
     cards = [{"id": str(i), "details-url": f"/details/{i}/", "address": f"Example Road {i}, London SW2", "price": "£2,100 pcm",
               "bedrooms": 2, "bathrooms": 1, "features": ["Garden"], "main-label": "Added today"} for i in ids]
     state = {"initialReduxState": {"results": {"list": cards, "totalResults": total}}}
-    blob = {"props": {"pageProps": state} if nested else state}
+    blob = {"props": {"pageProps": state} if nested else {"pageProps": {}, **state}}
     links = "".join(f'<a href="/to-rent/property/brixton/?max-price=2500&min-bedrooms=2&page={n}">{n}</a>' for n in pages)
     return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(blob)}</script>{links}</html>'
 

@@ -9,11 +9,25 @@ its source in the same checkout. Re-copy rather than editing here.
 
 # Live OnTheMarket pages (checked 2026-10-20) put the Redux state at
 # props.pageProps.initialReduxState; Telos's parser reads props.initialReduxState.
-_OTM_LOOP = '    for key in ("props", "initialReduxState"):\n'
+# Same code as the upstream fix (pasinit/telos#15); re-copy verbatim once it lands.
 _OTM_PAGE_PROPS = (
-    _OTM_LOOP,
-    '    if isinstance(data, dict) and isinstance(data.get("props"), dict) and "pageProps" in data["props"]:\n'
-    '        data = {"props": data["props"]["pageProps"]}  # telos-cardea: Next.js pageProps nesting\n' + _OTM_LOOP,
+    """    for key in ("props", "initialReduxState"):
+        if not isinstance(data, dict):
+            return {}
+        data = data.get(key)
+    return data if isinstance(data, dict) else {}
+""",
+    """    props = data.get("props") if isinstance(data, dict) else None
+    if not isinstance(props, dict):
+        return {}
+    # Current pages nest the state under pageProps; older ones put it beside pageProps.
+    page_props = props.get("pageProps")
+    if isinstance(page_props, dict) and "initialReduxState" in page_props:
+        state = page_props["initialReduxState"]
+    else:
+        state = props.get("initialReduxState")
+    return state if isinstance(state, dict) else {}
+""",
 )
 
 # vendored module -> (source path relative to the repo root, rewrites)
