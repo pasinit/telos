@@ -83,6 +83,10 @@ GRACE_SECONDS = 3 * 3600
 # Cardea answers these when it has understood and rejected the trigger (validation,
 # operation_not_installed, ...). Auth failures (401/403) mean a stale token, not a refusal.
 # 413 (request_too_large) is a refusal too, but of this version only: the installed one is kept.
+# Cardea's AgentRunRequest bounds (inclusive).
+ATTEMPT_TIMEOUT_BOUNDS = (30, 3600)
+RUN_TIMEOUT_BOUNDS = (60, 3600)
+MAX_ATTEMPTS_BOUNDS = (1, 3)
 REFUSALS = frozenset({400, 404, 409, 413, 422})
 TOO_LARGE = 413
 # Room left under Cardea's request cap for headers-free framing differences (httpx encodes
@@ -107,6 +111,20 @@ def _json_env(name: str) -> Any:
 
 def _flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, not {raw!r}") from None
+
+
+def _or(value: int | None, default: int) -> int:
+    return default if value is None else value
 
 
 def _mode(value: Any, source: str) -> str:
@@ -135,10 +153,33 @@ class BridgeConfig:
     alert_after: int = 3
     # Cardea's cap on a whole request body; trigger specs are trimmed to fit under it.
     max_request_bytes: int = 32768
+    # Agent-run limits written into every template (Cardea's own defaults are 900/1800 s,
+    # too short for routines whose confined browser calls queue behind each other).
+    attempt_timeout_seconds: int = 2700
+    run_timeout_seconds: int = 3600
+    # None keeps Cardea's default (2).
+    max_attempts: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject agent-run limits Cardea would refuse (AgentRunRequest bounds) with a clear error."""
+        bounds = {
+            "TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS": (self.attempt_timeout_seconds, ATTEMPT_TIMEOUT_BOUNDS),
+            "TELOS_CARDEA_RUN_TIMEOUT_SECONDS": (self.run_timeout_seconds, RUN_TIMEOUT_BOUNDS),
+        }
+        if self.max_attempts is not None:
+            bounds["TELOS_CARDEA_MAX_ATTEMPTS"] = (self.max_attempts, MAX_ATTEMPTS_BOUNDS)
+        for name, (value, (low, high)) in bounds.items():
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}, not {value}")
+        if self.attempt_timeout_seconds > self.run_timeout_seconds:
+            raise ValueError(
+                f"TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS ({self.attempt_timeout_seconds}) must not exceed "
+                f"TELOS_CARDEA_RUN_TIMEOUT_SECONDS ({self.run_timeout_seconds})"
+            )
 
     @classmethod
     def from_env(cls) -> Self:
-        """Read ``TELOS_CARDEA_*``; raises ValueError on an unknown mode or malformed JSON."""
+        """Read ``TELOS_CARDEA_*``; raises ValueError on an unknown mode, malformed JSON or out-of-range limits."""
         mapping = dict(DEFAULT_OPERATIONS)
         if _flag("TELOS_CARDEA_LEDGER"):
             mapping.update(LEDGER_OPERATIONS)
@@ -160,6 +201,9 @@ class BridgeConfig:
             context=_flag("TELOS_CARDEA_CONTEXT"),
             alert_after=max(1, int(os.getenv("TELOS_CARDEA_ALERT_AFTER", "3"))),
             max_request_bytes=int(os.getenv("TELOS_CARDEA_MAX_REQUEST_BYTES", "32768")),
+            attempt_timeout_seconds=_or(_int_env("TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS"), cls.attempt_timeout_seconds),
+            run_timeout_seconds=_or(_int_env("TELOS_CARDEA_RUN_TIMEOUT_SECONDS"), cls.run_timeout_seconds),
+            max_attempts=_int_env("TELOS_CARDEA_MAX_ATTEMPTS"),
         )
 
     @property
@@ -367,7 +411,11 @@ def plan(
         "grants": [*KERNEL_RIGHTS, *operations],
         "payload": {},
         "expect": expect,
+        "attempt_timeout_seconds": config.attempt_timeout_seconds,
+        "timeout_seconds": config.run_timeout_seconds,
     }
+    if config.max_attempts is not None:
+        template["max_attempts"] = config.max_attempts
     if config.context:
         template["context"] = context_calls(routine, operations)
         template["grants"] += [c["operation"] for c in template["context"] if c["operation"] not in template["grants"]]
