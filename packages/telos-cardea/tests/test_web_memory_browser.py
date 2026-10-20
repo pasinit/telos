@@ -107,6 +107,9 @@ class FakeLocator:
     async def is_enabled(self) -> bool:
         return True
 
+    async def evaluate(self, script: str) -> dict[str, str | None]:
+        return {"tag": "a", "type": "", "form_method": None, "override": ""}
+
     async def click(self, timeout: int) -> None:
         self.page.url = "https://example.com/next"
         self.page.html = "<html><main><p>" + "Page two. " * 50 + "</p></main></html>"

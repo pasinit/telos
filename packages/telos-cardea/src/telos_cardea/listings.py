@@ -19,6 +19,8 @@ from telos_cardea.fetch import Fetcher
 
 UNAVAILABLE_CAVEAT = "Coverage unavailable; this is not evidence of zero inventory."
 AGENCY_SEARCH_TIMEOUT_S = 120.0
+# Inside the descriptors' 180 s: curl, unblocker and a browser render can each take a while.
+PORTAL_SEARCH_TIMEOUT_S = 150.0
 
 
 def _unavailable(site: str, url: str, reason: str) -> Output:
@@ -96,7 +98,9 @@ async def rightmove_search(arguments: Arguments, context: OperationContext, *, c
     url = rightmove_url(arguments["location"], arguments.get("min_beds"), arguments.get("max_price"),
                         arguments.get("for_sale", True), arguments.get("max_beds"))
     try:
-        html = await fetcher.fetch_html(url)
+        html = await asyncio.wait_for(fetcher.fetch_html(url), timeout=PORTAL_SEARCH_TIMEOUT_S)
+    except TimeoutError:
+        return _unavailable("rightmove", url, f"timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s")
     except Exception as error:
         return _unavailable("rightmove", url, f"fetch failed ({error})")
     return _results("rightmove", url, rightmove.enrich(url, html)) or _unavailable("rightmove", url, "no recognised search results")
@@ -108,9 +112,14 @@ async def zoopla_search(arguments: Arguments, context: OperationContext, *, conf
     fetcher = fetcher or Fetcher(config or load_config())
     urls = zoopla_urls(arguments["location"], arguments.get("min_beds"), arguments.get("max_price"), arguments.get("for_sale", True))
     reason = "unrecognised search response"
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PORTAL_SEARCH_TIMEOUT_S
     for url in urls:
         try:
-            html = await fetcher.fetch_html(url)
+            html = await asyncio.wait_for(fetcher.fetch_html(url), timeout=max(0.0, deadline - loop.time()))
+        except TimeoutError:
+            reason = f"timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s"
+            break
         except Exception as error:
             reason = f"fetch failed ({error})"
             continue
