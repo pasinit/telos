@@ -492,25 +492,25 @@ def _cardea_bridge() -> RoutineMirror | None:
     """Routine mirroring into Cardea whenever ``TELOS_CARDEA_URL`` and ``TELOS_CARDEA_TOKEN_FILE`` are set.
 
     Active even in mode off, so the sync removes the triggers a previous shadow/live run installed.
-    Alert hooks only log here; operator notification wires into ``on_sync_failure``/``on_refusal``.
+    Its alert hooks email the operator (``TELOS_CARDEA_OPERATOR_EMAIL``, else the nightly owner).
     """
     config = BridgeConfig.from_env()
     if not config.configured:
         if config.wants_mirroring:
             log.error("TELOS_CARDEA_MODE=%s needs TELOS_CARDEA_URL and TELOS_CARDEA_TOKEN_FILE", config.mode)
         return None
-    return RoutineMirror(CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt)
-
-
-def _cardea_poller(bridge: RoutineMirror) -> RunPoller:
-    """Ingests Cardea run outcomes into Telos (see telos.cardea_ingest)."""
     configure_operator_alerts(
         _email_service.send_routine_notification,
         os.getenv("TELOS_CARDEA_OPERATOR_EMAIL") or settings.nightly_feedback_owner_email,
     )
-    # Operator alerts for the bridge hooks (called from the sync thread).
-    bridge.on_sync_failure = on_sync_failure
-    bridge.on_refusal = on_refusal
+    return RoutineMirror(
+        CardeaClient(config), _routine_store.list_all_enabled, _agent_tools, agent_prompt=_agent_prompt,
+        on_sync_failure=on_sync_failure, on_refusal=on_refusal,
+    )
+
+
+def _cardea_poller(bridge: RoutineMirror) -> RunPoller:
+    """Ingests Cardea run outcomes into Telos (see telos.cardea_ingest)."""
     transcripts = TranscriptSink(settings.recordatio_url, settings.chat_api_key) if extract_enabled() else None
     return RunPoller(
         bridge.client, _routine_store, IngestLedger(Database(settings.storage_root / "routines.db")),
