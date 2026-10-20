@@ -402,7 +402,7 @@ def test_decode_jwt_bundles():
 @pytest.fixture
 def spire_agent():
     """A fake SPIRE agent serving FetchJWTBundles on a unix socket."""
-    state = SimpleNamespace(calls=0, metadata=[], bundles={"cardea.internal": json.dumps({"keys": [public_jwk(SIGNING_KEY, "k1")]}).encode()})
+    state = SimpleNamespace(calls=0, metadata=[], bundles={"spiffe://cardea.internal": json.dumps({"keys": [public_jwk(SIGNING_KEY, "k1")]}).encode()})
 
     def fetch(request, context):
         state.calls += 1
@@ -436,13 +436,25 @@ def test_workload_api_keys_validate_real_tokens(spire_agent):
 def test_workload_api_keys_refresh_on_rotation(spire_agent):
     keys = WorkloadApiKeys(spire_agent.socket, "cardea.internal", min_refresh=0)
     assert keys.signing_key("k1") is not None
-    spire_agent.bundles = {"cardea.internal": json.dumps({"keys": [public_jwk(OTHER_KEY, "k2")]}).encode()}
+    spire_agent.bundles = {"spiffe://cardea.internal": json.dumps({"keys": [public_jwk(OTHER_KEY, "k2")]}).encode()}
     assert keys.signing_key("k2") is not None
     assert spire_agent.calls == 2
 
 
+def test_workload_api_keys_accept_bare_trust_domain_key(spire_agent):
+    spire_agent.bundles = {"cardea.internal": json.dumps({"keys": [public_jwk(SIGNING_KEY, "k1")]}).encode()}
+    assert WorkloadApiKeys(spire_agent.socket, "cardea.internal").signing_key("k1") is not None
+
+
+def test_workload_api_keys_prefer_trust_domain_id_key(spire_agent):
+    spire_agent.bundles = {"cardea.internal": json.dumps({"keys": [public_jwk(OTHER_KEY, "k1")]}).encode(),
+                           "spiffe://cardea.internal": json.dumps({"keys": [public_jwk(SIGNING_KEY, "k1")]}).encode()}
+    keys = WorkloadApiKeys(spire_agent.socket, "cardea.internal")
+    assert SvidVerifier(keys, audience=AUDIENCE, trust_domain="cardea.internal").verify(svid()) == KERNEL
+
+
 def test_workload_api_keys_missing_trust_domain(spire_agent):
-    spire_agent.bundles = {"elsewhere.internal": b'{"keys":[]}'}
+    spire_agent.bundles = {"spiffe://elsewhere.internal": b'{"keys":[]}'}
     with pytest.raises(BundleUnavailableError, match="no JWT bundle"):
         WorkloadApiKeys(spire_agent.socket, "cardea.internal").signing_key("k1")
 

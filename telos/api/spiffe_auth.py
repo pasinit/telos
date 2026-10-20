@@ -68,7 +68,7 @@ def _length_delimited(buf: bytes) -> Iterator[tuple[int, bytes]]:
 
 
 def decode_jwt_bundles(data: bytes) -> dict[str, bytes]:
-    """Decode a ``JWTBundlesResponse`` (``map<string, bytes> bundles = 1``) into trust domain -> JWKS bytes."""
+    """Decode a ``JWTBundlesResponse`` (``map<string, bytes> bundles = 1``) into trust domain ID -> JWKS bytes."""
     bundles = {}
     for number, entry in _length_delimited(data):
         if number != 1:
@@ -116,10 +116,12 @@ class WorkloadApiKeys:
             bundles = self._fetch()
         except (grpc.RpcError, StopIteration, ValueError) as exc:
             raise BundleUnavailableError(f"SPIRE Workload API FetchJWTBundles failed: {exc}") from exc
-        if self._trust_domain not in bundles:
-            raise BundleUnavailableError(f"SPIRE agent has no JWT bundle for trust domain {self._trust_domain}")
+        # SPIRE keys the map by trust domain ID (spiffe://<td>); accept the bare name too.
+        bundle = bundles.get(f"spiffe://{self._trust_domain}", bundles.get(self._trust_domain))
+        if bundle is None:
+            raise BundleUnavailableError(f"SPIRE agent has no JWT bundle for trust domain {self._trust_domain} (has: {sorted(bundles)})")
         try:
-            keys = jwt.PyJWKSet.from_dict(json.loads(bundles[self._trust_domain])).keys
+            keys = jwt.PyJWKSet.from_dict(json.loads(bundle)).keys
         except (ValueError, jwt.PyJWTError) as exc:
             raise BundleUnavailableError(f"unreadable JWT bundle for {self._trust_domain}: {exc}") from exc
         self._keys = {key.key_id: key for key in keys if key.key_id}
