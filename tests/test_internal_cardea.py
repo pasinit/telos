@@ -542,3 +542,120 @@ def test_404_detail_text_is_unchanged(env):
     assert env.client.get("/internal/cardea/v1/ledger", headers=headers).json()["detail"] == "No mirrored routine for this agent"
     missing = env.client.get("/internal/cardea/v1/ledger/assessments/by-key/k", headers=auth()).json()
     assert missing["detail"] == "No assessment recorded under this key"
+
+
+# ── request log and readiness ──────────────────────────────────────────
+
+
+def request_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "telos.internal_cardea" and r.getMessage().startswith("internal cardea request")]
+
+
+def test_each_request_logs_one_line_without_ids_or_query(env, caplog):
+    caplog.set_level("INFO", logger="telos.internal_cardea")
+    env.client.get("/internal/cardea/v1/ledger/assessments/by-key/effect-secret-7", headers=auth())
+    env.client.get("/internal/cardea/v1/ledger?offset=5&limit=7", headers=auth())
+    by_key, ledger = request_lines(caplog)
+    assert by_key.startswith(
+        f"internal cardea request method=GET route=/internal/cardea/v1/ledger/assessments/by-key/{{key}} sub={KERNEL} status=404 duration_ms="
+    )
+    assert by_key.endswith("code=assessment_not_found") and "effect-secret-7" not in by_key
+    assert "route=/internal/cardea/v1/ledger " in ledger and "status=200" in ledger and ledger.endswith("code=-")
+    assert "offset" not in ledger and "sam" not in by_key + ledger
+
+
+@pytest.mark.parametrize(("path", "headers", "expected"), [
+    ("/internal/cardea/v1/ledger", SCOPE, "route=/internal/cardea/v1/ledger sub=- status=401"),
+    ("/internal/cardea/v1/nowhere/xyzzy", {}, "route=unmatched sub=- status=404"),
+    ("/internal/cardea/v1/ledger?limit=0", None, "status=422"),
+])
+def test_failed_requests_log_their_code(env, caplog, path, headers, expected):
+    caplog.set_level("INFO", logger="telos.internal_cardea")
+    response = env.client.get(path, headers=auth() if headers is None else headers)
+    (line,) = request_lines(caplog)
+    assert expected in line and line.endswith(f"code={response.json()['code']}")
+    assert "xyzzy" not in line and "limit" not in line
+
+
+def test_cold_trust_bundle_answers_503_not_ready_fast(env):
+    from telos.api.spiffe_auth import NotReadyError
+
+    def not_ready(kid):
+        raise NotReadyError("no JWT bundle fetched yet")
+
+    env.keys.signing_key = not_ready
+    response = env.client.get("/internal/cardea/v1/ledger", headers=auth())
+    assert response.status_code == 503 and response.json()["code"] == "not_ready" and response.headers["Retry-After"] == "2"
+
+
+def test_slow_recall_is_disclosed_not_waited_for(env):
+    async def slow(user, slug):
+        await asyncio.sleep(5)
+
+    env.recall.side_effect = slow
+    client = TestClient(create_internal_app(dataclasses.replace(env.deps, recall_timeout=0.05)))
+    started = time.monotonic()
+    body = client.get("/internal/cardea/v1/routine-context", headers=auth()).json()
+    assert time.monotonic() - started < 2
+    assert "memory recall timed out after 0s" in body["reserved_recall"]
+
+
+def test_failed_fetch_is_not_retried_by_every_caller(spire_agent):
+    spire_agent.bundles = {"spiffe://elsewhere.internal": b'{"keys":[]}'}
+    keys = WorkloadApiKeys(spire_agent.socket, "cardea.internal", retry_after=60)
+    from telos.api.spiffe_auth import NotReadyError
+
+    for _ in range(5):
+        with pytest.raises(NotReadyError, match="no JWT bundle"):
+            keys.signing_key("k1")
+    assert spire_agent.calls == 1 and not keys.ready
+
+
+def test_fetch_retries_after_backoff(spire_agent):
+    spire_agent.bundles = {"spiffe://elsewhere.internal": b'{"keys":[]}'}
+    keys = WorkloadApiKeys(spire_agent.socket, "cardea.internal", retry_after=0)
+    with pytest.raises(BundleUnavailableError):
+        keys.signing_key("k1")
+    spire_agent.bundles = {"spiffe://cardea.internal": json.dumps({"keys": [public_jwk(SIGNING_KEY, "k1")]}).encode()}
+    assert keys.signing_key("k1") is not None and keys.ready
+
+
+def test_callers_do_not_queue_behind_an_in_flight_fetch(spire_agent):
+    from telos.api.spiffe_auth import NotReadyError
+
+    keys = WorkloadApiKeys(spire_agent.socket, "cardea.internal", timeout=0.1)
+    keys._lock.acquire()  # noqa: SLF001 (a fetch in flight on another thread)
+    try:
+        started = time.monotonic()
+        with pytest.raises(NotReadyError):
+            keys.signing_key("k1")
+        assert time.monotonic() - started < 1
+    finally:
+        keys._lock.release()  # noqa: SLF001
+    assert keys.warm() and keys.ready
+    keys._lock.acquire()  # noqa: SLF001
+    try:
+        assert keys.signing_key("k1") is not None  # served from the warm cache
+    finally:
+        keys._lock.release()  # noqa: SLF001
+    assert spire_agent.calls == 1
+
+
+def test_warm_failure_is_reported_not_raised():
+    keys = WorkloadApiKeys(f"unix://{tempfile.mkdtemp(prefix='spire')}/absent.sock", "cardea.internal", timeout=0.5)
+    assert keys.warm() is False and not keys.ready
+
+
+async def test_server_warms_the_bundle_on_start(env):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    warmed: list[bool] = []
+    server = InternalApiServer(env.client.app, host="127.0.0.1", port=port, warm=lambda: warmed.append(True))
+    server.start()
+    for _ in range(100):
+        if server.started and warmed:
+            break
+        await asyncio.sleep(0.02)
+    await server.stop()
+    assert warmed == [True]
