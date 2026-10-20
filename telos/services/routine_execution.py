@@ -264,24 +264,7 @@ class RoutineExecutor:
                 "routine %s (%s/%s) stream failed: %s — partial %d chars",
                 routine.id, user_id, agent_slug, exc.reason, len(exc.partial),
             )
-            if routine.notify_email and (user_email := self._get_user_email(user_id)):
-                agent_name = self._get_agent_name(user_id, agent_slug)
-                partial_block = (
-                    f"<hr><p><em>Partial output before the failure:</em></p>\n{exc.partial}"
-                    if exc.partial.strip()
-                    else ""
-                )
-                body = (
-                    f"<p><strong>This run failed before completing</strong> "
-                    f"(reason: {exc.reason}). No result was produced.</p>"
-                    f"{partial_block}\n\n---\n\n"
-                    f"<a href=\"{self._chat_url(agent_slug)}\">Continue in chat →</a>"
-                )
-                self._send_notification(user_id, agent_slug,
-                    to=user_email,
-                    subject=f"{agent_name}: {routine.name} FAILED — {date_str}",
-                    body=body,
-                )
+            self._notify_failed(user_id, agent_slug, routine, exc.reason, exc.partial, date_str)
             raise
 
         if routine.notify_email and (user_email := self._get_user_email(user_id)):
@@ -299,6 +282,36 @@ class RoutineExecutor:
             )
 
         return response
+
+    def notify_failure(self, user_id: str, agent_slug: str, routine: Any, reason: str, partial: str = "", *,
+                       date_str: str, turn_id: str | None = None) -> None:
+        """Send the FAILED notice for a run executed elsewhere (Cardea), recorded on ``turn_id`` when given."""
+        token = _current_turn.set(turn_id)
+        try:
+            self._notify_failed(user_id, agent_slug, routine, reason, partial, date_str)
+        finally:
+            _current_turn.reset(token)
+
+    def _notify_failed(self, user_id, agent_slug, routine, reason, partial, date_str):
+        if not routine.notify_email or not (user_email := self._get_user_email(user_id)):
+            return
+        agent_name = self._get_agent_name(user_id, agent_slug)
+        partial_block = (
+            f"<hr><p><em>Partial output before the failure:</em></p>\n{partial}"
+            if partial.strip()
+            else ""
+        )
+        body = (
+            f"<p><strong>This run failed before completing</strong> "
+            f"(reason: {reason}). No result was produced.</p>"
+            f"{partial_block}\n\n---\n\n"
+            f"<a href=\"{self._chat_url(agent_slug)}\">Continue in chat →</a>"
+        )
+        self._send_notification(user_id, agent_slug,
+            to=user_email,
+            subject=f"{agent_name}: {routine.name} FAILED — {date_str}",
+            body=body,
+        )
 
     def _events(self, user_id, slug):
         if self._storage_root is None or not _current_turn.get():

@@ -102,6 +102,14 @@ class RoutineRepo:
                     FOREIGN KEY (routine_id) REFERENCES routines(id)
                 )
             """)
+            # Cardea-executed runs carry the Cardea task id; unique so ingestion is idempotent.
+            try:
+                conn.execute("ALTER TABLE routine_results ADD COLUMN source_task_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS routine_results_source_task ON routine_results(source_task_id)"
+            )
 
     def create(self, user_id: str, agent_slug: str, description: str,
                name: str = "", interval_seconds: int = 3600,
@@ -179,18 +187,25 @@ class RoutineRepo:
         with self._db.connect() as conn:
             conn.execute(f"UPDATE routines SET {', '.join(sets)} WHERE id=?", vals)
 
-    def mark_run(self, routine_id: str) -> None:
-        now = datetime.now(UTC).isoformat()
+    def mark_run(self, routine_id: str, at: str | None = None) -> None:
+        now = at or datetime.now(UTC).isoformat()
         with self._db.connect() as conn:
             conn.execute("UPDATE routines SET last_run=? WHERE id=?", (now, routine_id))
 
-    def save_result(self, routine_id: str, response: str) -> None:
+    def save_result(self, routine_id: str, response: str, *, source_task_id: str | None = None) -> bool:
+        """Store a run's output; False when ``source_task_id`` was already recorded."""
         now = datetime.now(UTC).isoformat()
         with self._db.connect() as conn:
-            conn.execute(
-                "INSERT INTO routine_results (routine_id, response, timestamp) VALUES (?,?,?)",
-                (routine_id, response, now),
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO routine_results (routine_id, response, timestamp, source_task_id) VALUES (?,?,?,?)",
+                (routine_id, response, now, source_task_id),
             )
+        return cursor.rowcount == 1
+
+    def has_source_task(self, source_task_id: str) -> bool:
+        with self._db.connect() as conn:
+            row = conn.execute("SELECT 1 FROM routine_results WHERE source_task_id=?", (source_task_id,)).fetchone()
+        return row is not None
 
     def recent_results(self, user_id: str, agent_slug: str, limit: int = 10) -> list[RoutineResult]:
         with self._db.connect() as conn:
