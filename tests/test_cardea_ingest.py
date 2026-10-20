@@ -34,6 +34,16 @@ class FakeCardea:
         self.trigger_list: list[dict[str, Any]] = []
         self.runs: dict[str, dict[str, Any]] = {}
         self.fetched: list[str] = []
+        self.receipts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.outputs: dict[str, Any] = {}
+        self.receipt_fetches: list[str] = []
+
+    def operation(self, task_id: str, operation_id: str) -> dict[str, Any]:
+        self.receipt_fetches.append(operation_id)
+        return self.receipts[(task_id, operation_id)]
+
+    def output(self, task_id: str) -> Any:
+        return self.outputs[task_id]
 
     def triggers(self) -> list[dict[str, Any]]:
         return self.trigger_list
@@ -65,7 +75,7 @@ def admitted(task_id: str, event_id: int = 1, slot: str = SLOT) -> dict[str, Any
 
 def call(operation: str, state: str = "succeeded", op_id: str = "op-01", **extra: Any) -> dict[str, Any]:
     arguments = EMAIL if operation.startswith("mail.") else {"area": "E8"}
-    result = {"message_id": "<k@telos>", "to": EMAIL["to"], "status": "sent"} if state == "succeeded" else None
+    result = {"output": {"message_id": "<k@telos>", "to": EMAIL["to"], "status": "sent"}} if state == "succeeded" else None
     return {"operation_id": op_id, "operation": operation, "state": state, "arguments": arguments, "result": result,
             "failure": None if state == "succeeded" else state, "reconciled": False,
             "updated_at": NOW.isoformat(), **extra}
@@ -120,6 +130,7 @@ def test_live_run_writes_turn_delivery_result_and_transcript(env):
     assert kinds == ["cardea_run", "tool_call", "tool_result", "tool_call", "tool_result", "email_delivery", "turn_completed"]
     delivery = dict(events_of(env["history"]))["email_delivery"]
     assert delivery["status"] == "accepted_by_smtp" and delivery["subject"] == "Daily search"
+    assert delivery["message_id"] == "<k@telos>"
     # Counted exactly once in the delivery history Telos feeds into routine context.
     assert [d["subject"] for d in log.execution_events.recent_email_deliveries("sam@example.test")] == ["Daily search"]
 
@@ -351,3 +362,120 @@ def test_operator_alerts_deliver_each_bridge_hook_call():
         configure_operator_alerts(sent, "")
     assert cardea_ingest._operator_alert is None  # noqa: SLF001
     on_sync_failure(6, "still down")  # unconfigured: logged, not raised
+
+
+def too_large() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://cardea.test/v0.2/tasks/task-1/run")
+    response = httpx.Response(413, json={"code": "response_too_large"}, request=request)
+    return httpx.HTTPStatusError("413 response_too_large", request=request, response=response)
+
+
+def test_oversize_run_view_is_logged_once_and_backed_off(env, caplog):
+    rid = env["routine"].id
+    clock = {"now": NOW}
+    env["poller"].clock = lambda: clock["now"]
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = too_large()
+    caplog.set_level("WARNING", logger="telos.cardea.ingest")
+    for _ in range(5):  # one-minute passes
+        assert env["poller"].poll() == {}
+        clock["now"] += timedelta(minutes=1)
+    assert env["cardea"].fetched == ["task-1"]
+    assert len([r for r in caplog.records if "too large" in r.getMessage()]) == 1
+    clock["now"] = NOW + timedelta(minutes=31)
+    env["poller"].poll()
+    assert env["cardea"].fetched == ["task-1", "task-1"]  # retried after the back-off, then waits 60 min
+    clock["now"] += timedelta(minutes=59)
+    env["poller"].poll()
+    assert len(env["cardea"].fetched) == 2
+    env["cardea"].runs["task-1"] = run()
+    clock["now"] += timedelta(minutes=2)
+    assert env["poller"].poll() == {"task-1": "live:succeeded"}
+    assert len([r for r in caplog.records if "too large" in r.getMessage()]) == 1
+
+
+def test_oversize_backoff_is_capped(env):
+    rid = env["routine"].id
+    clock = {"now": NOW}
+    env["poller"].clock = lambda: clock["now"]
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = too_large()
+    for _ in range(12):
+        env["poller"].poll()
+        clock["now"] += timedelta(hours=6, seconds=1)
+    assert len(env["cardea"].fetched) == 12  # never waits longer than 6 h
+
+
+def test_tasks_that_413d_are_ingested_on_the_first_pass_after_a_deploy(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = too_large()
+    assert env["poller"].poll() == {}
+    assert not env["ledger"].seen("task:task-1")  # never given up on
+    # The fixed Telos restarts (fresh poller, same ledger) against the bounded run view.
+    env["cardea"].runs["task-1"] = run()
+    restarted = RunPoller(env["cardea"], env["store"], env["ledger"], env["history"].parents[2], env["poller"].notifier,
+                          transcripts=env["transcripts"], clock=lambda: NOW + timedelta(minutes=1))
+    assert restarted.poll() == {"task-1": "live:succeeded"}
+
+
+# ── bounded run view (Cardea run views with previews, paged calls, omitted output) ───────
+
+
+LONG_BODY = "Listing details. " * 400
+
+
+def bounded(call_: dict[str, Any]) -> dict[str, Any]:
+    """``call_`` as the bounded view shows a call whose arguments and result exceed the preview size."""
+    arguments, result = json.dumps(call_["arguments"]), json.dumps(call_["result"])
+    return {**call_, "arguments": None, "arguments_bytes": len(arguments), "arguments_sha256": "a" * 64,
+            "arguments_preview": arguments[:2048], "result": None,
+            "result_bytes": len(result) if call_["result"] else None, "result_sha256": "b" * 64 if call_["result"] else None,
+            "result_preview": result[:2048] if call_["result"] else None, "receipt_id": f"r-{call_['operation_id']}",
+            "deduplicated": False}
+
+
+def test_bounded_mail_call_is_completed_from_its_receipt(env):
+    rid = env["routine"].id
+    email = {**EMAIL, "body": LONG_BODY}
+    mail = call("mail.send", op_id="call-0002", arguments=email)
+    search = call("listings.rightmove_search", op_id="call-0001")
+    search = {**bounded({**search, "arguments": {"area": "E8", "notes": "x" * 3000}})}
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = run(calls=[search, bounded(mail)])
+    env["cardea"].receipts[("task-1", "call-0002")] = {
+        "request": {"name": "mail.send", "arguments": {"arguments": email}}, "state": "succeeded",
+        "result": {"output": {"message_id": "<full@telos>", "to": EMAIL["to"], "status": "sent"}},
+        "failure": None, "reconciliation_evidence": [],
+    }
+
+    assert env["poller"].poll() == {"task-1": "live:succeeded"}
+    assert env["cardea"].receipt_fetches == ["call-0002"]  # only the mail call is fetched in full
+    events = events_of(env["history"])
+    delivery = dict(events)["email_delivery"]
+    assert delivery["body"] == LONG_BODY and delivery["message_id"] == "<full@telos>" and delivery["to"] == EMAIL["to"]
+    search_input = next(p for k, p in events if k == "tool_call" and p["name"] == "listings.rightmove_search")["input"]
+    assert search_input["bytes"] > 3000 and search_input["preview"].startswith('{"area": "E8"')
+    log = ConversationLog(env["history"])
+    assert [d["body"] for d in log.execution_events.recent_email_deliveries("sam@example.test")] == [LONG_BODY]
+
+
+def test_truncated_output_is_read_whole(env):
+    rid = env["routine"].id
+    full = "A long digest. " * 6000
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = {**run(text=full[:1000]), "output_truncated": True}
+    env["cardea"].outputs["task-1"] = {"text": full, "turns": 9, "cost_usd": 1.3, "attempts": 1, "calls": []}
+    assert env["poller"].poll() == {"task-1": "live:succeeded"}
+    assert [r.response for r in env["store"].recent_results("sam", "scout")] == [full]
+    assert dict(events_of(env["history"]))["cardea_run"]["turns"] == 9
+
+
+def test_truncated_shadow_output_is_stored_whole(env):
+    rid = env["routine"].id
+    full = "A long shadow digest. " * 5000
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")], shadow=True)]
+    env["cardea"].runs["task-1"] = {**run(text="trimmed", calls=[call("mail.preview", op_id="call-0001")]), "output_truncated": True}
+    env["cardea"].outputs["task-1"] = {"text": full, "turns": 3, "cost_usd": 0.4, "attempts": 1, "calls": []}
+    assert env["poller"].poll() == {"task-1": "shadow:succeeded"}
+    assert env["ledger"].shadow_runs(rid)[0]["output_text"] == full

@@ -17,6 +17,11 @@ Failed runs, refused (``failed``) or ``missed`` slots, mail calls left ``outcome
 slots with nothing admitted 20 minutes after they were due send Telos's usual FAILED routine
 notice for live routines; shadow failures are only logged and stored.
 
+Cardea's run view is bounded: calls are paged (joined by ``CardeaClient.run``), large arguments
+and results come as previews (mail calls are completed from their receipts, since their full
+text is delivery evidence) and an oversize output is read whole from the task's output. A run
+view an older Cardea refuses as too large (413) is logged once and retried with back-off.
+
 Everything is idempotent on the task id (or trigger event id), so a crash or restart replays
 nothing twice.
 """
@@ -48,12 +53,22 @@ WATCHDOG_GRACE = timedelta(minutes=20)
 # Slot events older than this are recorded silently: the first poll after deploy must not
 # replay a backlog of FAILED emails for slots the user has already lived through.
 NOTIFY_WINDOW = timedelta(hours=6)
+# A run view Cardea refuses as too large (413) is retried after this, doubling up to the cap,
+# and logged once per task rather than on every one-minute pass.
+OVERSIZE_RETRY = timedelta(minutes=30)
+OVERSIZE_RETRY_CAP = timedelta(hours=6)
+TOO_LARGE = 413
 _TOOL_FOR = {operation: tool for tool, operation in DEFAULT_OPERATIONS.items()}
+# Calls whose full arguments/result Telos records (delivery evidence), fetched per call when the
+# bounded run view only has previews of them.
+FULL_CALLS = frozenset({"mail.send", "mail.preview"})
 
 
 class RunSource(Protocol):
     def triggers(self) -> list[dict[str, Any]]: ...
     def run(self, task_id: str) -> dict[str, Any]: ...
+    def operation(self, task_id: str, operation_id: str) -> dict[str, Any]: ...
+    def output(self, task_id: str) -> Any: ...
 
 
 class FailureNotifier(Protocol):
@@ -63,6 +78,22 @@ class FailureNotifier(Protocol):
 
 def is_shadow(operations: Iterable[str]) -> bool:
     return any(name.endswith("preview") for name in operations)
+
+
+def _result(call: dict[str, Any]) -> dict[str, Any]:
+    """A call's operation output: Cardea wraps it as ``{"output": ...}`` (plus ``deduplicated``)."""
+    result = call.get("result") or {}
+    output = result.get("output", result) if isinstance(result, dict) else result
+    return output if isinstance(output, dict) else {"value": output}
+
+
+def _shown(call: dict[str, Any], part: str) -> Any:
+    """Arguments or result for display: inline when Cardea sent them, else its bounded preview."""
+    if call.get(part) is not None:
+        return call[part]
+    if call.get(f"{part}_preview") is not None:
+        return {"preview": call[f"{part}_preview"], "bytes": call.get(f"{part}_bytes")}
+    return None
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -172,6 +203,8 @@ class RunPoller:
         self.notifier = notifier
         self.transcripts = transcripts
         self.clock = clock
+        # task id -> (consecutive 413s, earliest next fetch); in memory, so a restart retries once.
+        self._oversize: dict[str, tuple[int, datetime]] = {}
 
     def poll(self) -> dict[str, str]:
         """One pass over every ``telos.*`` trigger; returns what happened per task/event key."""
@@ -230,10 +263,14 @@ class RunPoller:
     def _task(self, trigger: dict[str, Any], routine: Routine, task_id: str, slot: str | None) -> str | None:
         if self.ledger.seen(f"task:{task_id}"):
             return None
-        run = self.client.run(task_id)
+        run = self._fetch(task_id, routine)
+        if run is None:
+            return None
         if run["state"] not in TERMINAL:
             return None
-        calls = run.get("calls") or (run.get("output") or {}).get("calls") or []
+        if run.get("output_truncated"):
+            run = {**run, "output": self.client.output(task_id)}
+        calls = [self._full(task_id, c) for c in run.get("calls") or []]
         operations = [c["operation"] for c in calls] or trigger["definition"]["template"].get("operations", [])
         if is_shadow(operations):
             self.ledger.save_shadow(task_id=task_id, trigger_id=trigger["trigger_id"], routine_id=routine.id,
@@ -246,6 +283,34 @@ class RunPoller:
         outcome = self._live(routine, task_id, slot, run, calls)
         self.ledger.mark(f"task:{task_id}", "live", routine.id)
         return outcome
+
+    def _full(self, task_id: str, call: dict[str, Any]) -> dict[str, Any]:
+        """``call`` with full arguments and result from its receipt when the view only had previews."""
+        missing = call.get("arguments") is None or (call.get("result") is None and call.get("result_bytes"))
+        if call["operation"] not in FULL_CALLS or not missing:
+            return call
+        receipt = self.client.operation(task_id, call["operation_id"])
+        return {**call, "arguments": (receipt.get("request") or {}).get("arguments", {}).get("arguments"),
+                "result": receipt.get("result")}
+
+    def _fetch(self, task_id: str, routine: Routine) -> dict[str, Any] | None:
+        """The task's run view, or None while a too-large view is backing off."""
+        failures, retry_at = self._oversize.get(task_id, (0, self.clock()))
+        if self.clock() < retry_at:
+            return None
+        try:
+            run = self.client.run(task_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != TOO_LARGE:
+                raise
+            delay = min(OVERSIZE_RETRY * 2**failures, OVERSIZE_RETRY_CAP)
+            self._oversize[task_id] = (failures + 1, self.clock() + delay)
+            if failures == 0:
+                log.error("cardea run view for task %s (routine %s) is too large to fetch (413); retrying every %s at most",
+                          task_id, routine.id, delay)
+            return None
+        self._oversize.pop(task_id, None)
+        return run
 
     # -- live runs ----------------------------------------------------------------------
 
@@ -296,18 +361,18 @@ class RunPoller:
         for call in calls:
             name = call["operation"]
             events.append(turn_id, "tool_call", {
-                "call_id": call["operation_id"], "name": name, "tool": _TOOL_FOR.get(name), "input": call.get("arguments") or {},
+                "call_id": call["operation_id"], "name": name, "tool": _TOOL_FOR.get(name), "input": _shown(call, "arguments") or {},
             })
             events.append(turn_id, "tool_result", {
                 "call_id": call["operation_id"], "name": name, "is_error": call.get("state") != "succeeded",
-                "state": call.get("state"), "result": call.get("result") if call.get("result") is not None else call.get("failure"),
+                "state": call.get("state"), "result": shown if (shown := _shown(call, "result")) is not None else call.get("failure"),
                 "reconciled": bool(call.get("reconciled")), "deduplicated": bool(call.get("deduplicated")),
             })
             if name == "mail.send" and call.get("state") in {"succeeded", "outcome_unknown"}:
                 # The only delivery evidence for Cardea sends: tool rows are named after the
                 # operation, so recent_email_deliveries counts each email exactly once.
                 arguments = call.get("arguments") or {}
-                result = call.get("result") or {}
+                result = _result(call)
                 events.append(turn_id, "email_delivery", {
                     "to": arguments.get("to", ""), "subject": arguments.get("subject", ""), "body": arguments.get("body", ""),
                     "status": "accepted_by_smtp" if call["state"] == "succeeded" else "unknown",

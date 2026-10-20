@@ -20,6 +20,7 @@ The bridge is active whenever ``TELOS_CARDEA_URL`` and ``TELOS_CARDEA_TOKEN_FILE
 switching to ``off`` converges Cardea to no Telos triggers instead of leaving them firing.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -537,10 +538,48 @@ class CardeaClient:
                 return listed
             after = body["next"]
 
-    def run(self, task_id: str) -> dict[str, Any]:
-        response = self.http.get(f"/v0.2/tasks/{task_id}/run", headers=self._headers())
+    def _get(self, path: str, **params: Any) -> dict[str, Any]:
+        response = self.http.get(path, params=params or None, headers=self._headers())
         response.raise_for_status()
         return dict(response.json())
+
+    def run(self, task_id: str) -> dict[str, Any]:
+        """The bounded run view with every page of ``calls`` joined (``calls_next`` followed).
+
+        Arguments and results too large for the view are null with ``*_preview`` fields; see
+        :meth:`operation`. ``output_truncated`` means :meth:`output` has the whole document.
+        """
+        run = self._get(f"/v0.2/tasks/{task_id}/run")
+        calls = list(run.get("calls") or [])
+        cursor = run.get("calls_next")
+        while cursor:
+            page = self._get(f"/v0.2/tasks/{task_id}/run", after=cursor)
+            calls.extend(page.get("calls") or [])
+            cursor = page.get("calls_next")
+        return {**run, "calls": calls, "calls_next": None}
+
+    def operation(self, task_id: str, operation_id: str) -> dict[str, Any]:
+        """One call's full receipt: ``request.arguments.arguments``, ``result.output``, ``state``, ``failure``."""
+        return dict(self._get(f"/v0.2/tasks/{task_id}/operations/{operation_id}")["receipt"])
+
+    def output(self, task_id: str) -> Any:
+        """The task's whole published output document, read in chunks when it is too large to inline.
+
+        Raises ValueError when the reassembled bytes do not match Cardea's digest.
+        """
+        body = self._get(f"/v0.2/tasks/{task_id}/output")
+        if not body.get("content_omitted"):
+            return body.get("content")
+        data = bytearray()
+        offset: int | None = 0
+        digest = ""
+        while offset is not None:
+            chunk = self._get(f"/v0.2/tasks/{task_id}/output/content", offset=offset)
+            data.extend(base64.b64decode(chunk["data_base64"]))
+            digest, offset = chunk["sha256"], chunk.get("next_offset")
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError(f"output of task {task_id} does not match its sha256")
+        return json.loads(data)
 
 
 def _refusal(error: httpx.HTTPError) -> str | None:
