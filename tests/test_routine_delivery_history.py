@@ -127,7 +127,7 @@ async def test_executor_discloses_history_read_failure(tmp_path, monkeypatch):
         messages.append(message)
         yield "text", "Partial continuity"
 
-    monkeypatch.setattr("telos.services.routine_execution.delivery_history", fail)
+    monkeypatch.setattr("telos.services.routine_context.delivery_history", fail)
     runtime = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(astream=stream)), make_context=MagicMock())
     executor = RoutineExecutor(runtime, MagicMock(), lambda _: "owner@example.com", lambda *_: "Homey", "",
                                storage_root=tmp_path)

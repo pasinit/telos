@@ -45,6 +45,7 @@ from itsdangerous import URLSafeSerializer
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from telos import Agent
+from telos.api.internal_cardea import internal_api_from_env
 from telos.api.registry import AgentRegistry
 from telos.api.settings import Settings
 from telos.cardea_bridge import BridgeConfig, CardeaClient, RoutineMirror
@@ -359,6 +360,10 @@ def _agent_display_name(user_id: str, slug: str) -> str:
     return meta["name"] if meta else slug
 
 
+_routine_recall = RoutineRecall(
+    lambda: RecordatioFeedbackClient(settings.recordatio_url, settings.chat_api_key or "nightly"),
+    settings.routine_recall_queries,
+)
 _routine_executor = RoutineExecutor(
     agent_runtime=_agent_runtime,
     email_service=_email_service,
@@ -366,10 +371,7 @@ _routine_executor = RoutineExecutor(
     get_agent_name_fn=_agent_display_name,
     base_url=settings.base_url,
     storage_root=settings.storage_root,
-    recall_fn=RoutineRecall(
-        lambda: RecordatioFeedbackClient(settings.recordatio_url, settings.chat_api_key or "nightly"),
-        settings.routine_recall_queries,
-    ),
+    recall_fn=_routine_recall,
 )
 
 
@@ -442,6 +444,13 @@ async def lifespan(app: FastAPI):
     runner.start()
     if bridge is not None:
         asyncio.create_task(_sync_cardea(bridge, _cardea_poller(bridge)))  # noqa: RUF006
+    # Cardea-facing internal API on its own port; off unless TELOS_INTERNAL_API=1.
+    internal_api = internal_api_from_env(
+        routines=_routine_store.list_all_enabled, agent_tools=_agent_tools, storage_root=settings.storage_root,
+        get_user_email=_registry.get_user_email, recall_fn=_routine_recall,
+    )
+    if internal_api is not None:
+        internal_api.start()
     app.state.routine_runner = runner
     _agent_runtime.routine_runner = runner
     # Nightly feedback cron shares the routine runner's AsyncIOScheduler so
@@ -466,6 +475,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if internal_api is not None:
+            await internal_api.stop()
         _improvement_service.shutdown()
         runner.stop()
         app.state.routine_runner = None
