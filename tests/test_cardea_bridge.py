@@ -576,3 +576,49 @@ def test_changing_run_limits_updates_the_trigger(cardea: Cardea):
     longer = RoutineMirror(cardea.client(attempt_timeout_seconds=3000), lambda: [routine()], lambda user, slug: TOOLS)
     assert longer.sync() == {"telos.73103f92fad9": "updated"}
     assert cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["attempt_timeout_seconds"] == 3000
+
+
+def test_templates_carry_run_budgets():
+    template = trigger_spec(routine(), TOOLS, LIVE)["template"]  # type: ignore[index]
+    assert (template["max_turns"], template["max_tool_calls"], template["max_cost_usd"]) == (120, 300, 6.0)
+    assert isinstance(template["max_cost_usd"], float)
+    tight = BridgeConfig(mode="live", allow_drop=frozenset({"create_routine"}), max_turns=50, max_tool_calls=80, max_cost_usd=3)
+    template = trigger_spec(routine(), TOOLS, tight)["template"]  # type: ignore[index]
+    assert (template["max_turns"], template["max_tool_calls"], template["max_cost_usd"]) == (50, 80, 3.0)
+    assert isinstance(template["max_cost_usd"], float)
+
+
+def test_run_budgets_from_env(monkeypatch):
+    for name in ("TELOS_CARDEA_MAX_TURNS", "TELOS_CARDEA_MAX_TOOL_CALLS", "TELOS_CARDEA_MAX_COST_USD"):
+        monkeypatch.delenv(name, raising=False)
+    config = BridgeConfig.from_env()
+    assert (config.max_turns, config.max_tool_calls, config.max_cost_usd) == (120, 300, 6.0)
+    monkeypatch.setenv("TELOS_CARDEA_MAX_TURNS", "200")
+    monkeypatch.setenv("TELOS_CARDEA_MAX_TOOL_CALLS", "1")
+    monkeypatch.setenv("TELOS_CARDEA_MAX_COST_USD", "50")
+    config = BridgeConfig.from_env()
+    assert (config.max_turns, config.max_tool_calls, config.max_cost_usd) == (200, 1, 50.0)
+
+
+@pytest.mark.parametrize(("env", "message"), [
+    ({"TELOS_CARDEA_MAX_TURNS": "0"}, "MAX_TURNS must be between 1 and 200, not 0"),
+    ({"TELOS_CARDEA_MAX_TURNS": "201"}, "MAX_TURNS must be between 1 and 200, not 201"),
+    ({"TELOS_CARDEA_MAX_TOOL_CALLS": "501"}, "MAX_TOOL_CALLS must be between 1 and 500, not 501"),
+    ({"TELOS_CARDEA_MAX_COST_USD": "0"}, "MAX_COST_USD must be above 0 and at most 50, not 0.0"),
+    ({"TELOS_CARDEA_MAX_COST_USD": "50.01"}, "MAX_COST_USD must be above 0 and at most 50"),
+    ({"TELOS_CARDEA_MAX_COST_USD": "nan"}, "MAX_COST_USD must be above 0"),
+    ({"TELOS_CARDEA_MAX_COST_USD": "six"}, "MAX_COST_USD must be a number"),
+    ({"TELOS_CARDEA_MAX_TURNS": "1.5"}, "MAX_TURNS must be an integer"),
+])
+def test_run_budgets_are_validated_at_startup(monkeypatch, env, message):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=message):
+        BridgeConfig.from_env()
+
+
+def test_changing_a_run_budget_updates_the_trigger(cardea: Cardea):
+    assert RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS).sync() == {"telos.73103f92fad9": "installed"}
+    richer = RoutineMirror(cardea.client(max_cost_usd=8.0), lambda: [routine()], lambda user, slug: TOOLS)
+    assert richer.sync() == {"telos.73103f92fad9": "updated"}
+    assert cardea.triggers["telos.73103f92fad9"]["definition"]["template"]["max_cost_usd"] == 8.0

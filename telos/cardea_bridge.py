@@ -87,6 +87,9 @@ GRACE_SECONDS = 3 * 3600
 ATTEMPT_TIMEOUT_BOUNDS = (30, 3600)
 RUN_TIMEOUT_BOUNDS = (60, 3600)
 MAX_ATTEMPTS_BOUNDS = (1, 3)
+MAX_TURNS_BOUNDS = (1, 200)
+MAX_TOOL_CALLS_BOUNDS = (1, 500)
+MAX_COST_USD_LIMIT = 50.0  # exclusive of 0, inclusive of this
 REFUSALS = frozenset({400, 404, 409, 413, 422})
 TOO_LARGE = 413
 # Room left under Cardea's request cap for headers-free framing differences (httpx encodes
@@ -121,6 +124,16 @@ def _int_env(name: str) -> int | None:
         return int(raw)
     except ValueError:
         raise ValueError(f"{name} must be an integer, not {raw!r}") from None
+
+
+def _float_env(name: str) -> float | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, not {raw!r}") from None
 
 
 def _or(value: int | None, default: int) -> int:
@@ -159,18 +172,27 @@ class BridgeConfig:
     run_timeout_seconds: int = 3600
     # None keeps Cardea's default (2).
     max_attempts: int | None = None
+    # Per-run budgets (Cardea defaults 40 turns, 100 tool calls, $2), sized above what
+    # Telos routines are seen to use so Cardea stops runaways, not normal runs.
+    max_turns: int = 120
+    max_tool_calls: int = 300
+    max_cost_usd: float = 6.0
 
     def __post_init__(self) -> None:
         """Reject agent-run limits Cardea would refuse (AgentRunRequest bounds) with a clear error."""
         bounds = {
             "TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS": (self.attempt_timeout_seconds, ATTEMPT_TIMEOUT_BOUNDS),
             "TELOS_CARDEA_RUN_TIMEOUT_SECONDS": (self.run_timeout_seconds, RUN_TIMEOUT_BOUNDS),
+            "TELOS_CARDEA_MAX_TURNS": (self.max_turns, MAX_TURNS_BOUNDS),
+            "TELOS_CARDEA_MAX_TOOL_CALLS": (self.max_tool_calls, MAX_TOOL_CALLS_BOUNDS),
         }
         if self.max_attempts is not None:
             bounds["TELOS_CARDEA_MAX_ATTEMPTS"] = (self.max_attempts, MAX_ATTEMPTS_BOUNDS)
         for name, (value, (low, high)) in bounds.items():
             if not low <= value <= high:
                 raise ValueError(f"{name} must be between {low} and {high}, not {value}")
+        if not 0 < self.max_cost_usd <= MAX_COST_USD_LIMIT:
+            raise ValueError(f"TELOS_CARDEA_MAX_COST_USD must be above 0 and at most {MAX_COST_USD_LIMIT:g}, not {self.max_cost_usd}")
         if self.attempt_timeout_seconds > self.run_timeout_seconds:
             raise ValueError(
                 f"TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS ({self.attempt_timeout_seconds}) must not exceed "
@@ -204,6 +226,9 @@ class BridgeConfig:
             attempt_timeout_seconds=_or(_int_env("TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS"), cls.attempt_timeout_seconds),
             run_timeout_seconds=_or(_int_env("TELOS_CARDEA_RUN_TIMEOUT_SECONDS"), cls.run_timeout_seconds),
             max_attempts=_int_env("TELOS_CARDEA_MAX_ATTEMPTS"),
+            max_turns=_or(_int_env("TELOS_CARDEA_MAX_TURNS"), cls.max_turns),
+            max_tool_calls=_or(_int_env("TELOS_CARDEA_MAX_TOOL_CALLS"), cls.max_tool_calls),
+            max_cost_usd=cls.max_cost_usd if (cost := _float_env("TELOS_CARDEA_MAX_COST_USD")) is None else cost,
         )
 
     @property
@@ -413,6 +438,10 @@ def plan(
         "expect": expect,
         "attempt_timeout_seconds": config.attempt_timeout_seconds,
         "timeout_seconds": config.run_timeout_seconds,
+        "max_turns": config.max_turns,
+        "max_tool_calls": config.max_tool_calls,
+        # Cardea's field is a strict float.
+        "max_cost_usd": float(config.max_cost_usd),
     }
     if config.max_attempts is not None:
         template["max_attempts"] = config.max_attempts
