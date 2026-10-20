@@ -1,6 +1,9 @@
 # Telos — Architecture Redesign
 
-Status: proposal • Author: senior-architect review pass • Target: telos v2.x
+Status: **historical** — the layered package described here has been implemented
+(`core → domain → transport → services → api`, enforced by `make lint-imports`). File paths
+and line numbers below (e.g. `telos/ui/server.py`) describe the pre-refactor code and no
+longer exist. Kept because code comments cite its sections.
 
 ## 1. Executive summary
 

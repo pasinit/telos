@@ -2,7 +2,7 @@
 
 ## Architecture
 
-Direct London estate-agent search (beyond Rightmove/Zoopla) so agents like
+Direct estate-agent search (beyond Rightmove/Zoopla) so agents like
 `homey` reach agent-direct / off-portal inventory.
 
 - **Protocol + impls:** `AgencySearch` ABC in
@@ -19,8 +19,8 @@ Direct London estate-agent search (beyond Rightmove/Zoopla) so agents like
     pages don't server-render list-level price/beds).
   - **detail** → a robustness ladder: (1) schema.org property JSON-LD
     (Foxtons); (2) Open Graph / `<title>` fallback — every site tested
-    exposes `og:title`/`description` like "3 bedroom … in Kidderpore
-    Gardens, London, NW3 - £7,500 pcm", so beds/baths/price/address regex
+    exposes `og:title`/`description` like "3 bedroom … in <Street>,
+    London, <District> - £<price> pcm", so beds/baths/price/address regex
     out even with no JSON-LD.
 
 Best-effort by construction: an unparseable shape yields `None` (raw page
@@ -89,14 +89,14 @@ price + beds directly (no per-listing fetch) and `max_price`/`min_beds`/
 - Response `{ total, page, totalPages, data:[...] }`; `data[]` items:
   `propertyReference`, `street`, `location`, `postcode`, `bedrooms`,
   `bathrooms`, `priceFrom`/`priceTo`, `point` (geo), `instructionType`, `assets`.
-- **Price unit: lettings `priceFrom` is £/week** (verified: Seymour Place
-  5-bed = 2925 here vs £12,675 pcm in JSON-LD → ×52/12). We convert to £ pcm.
+- **Price unit: lettings `priceFrom` is £/week** (verified against the
+  same listing's JSON-LD £ pcm → ×52/12). We convert to £ pcm.
 - Detail URL rebuilt as `/properties-to-rent/{postcode-district}/{ref.lower()}`.
 
 ### Homeflow platform (Chestertons, Hamptons) — no listings API
 Probed 2026-08-16: the only `concierge.homeflow.co.uk` call is
 `/api/agency/{uuid}` (agency **config** — branches, selectors — not
-listings; Chestertons uuid `b0def7ae-0bf1-40ac-936f-0d64610ce070`).
+listings).
 Listings are **server-rendered** (Next.js) — no JSON search endpoint. The
 SSR cards *do* carry price/beds/address, but the markup is brittle (a
 featured-carousel image-card duplicates each listing ahead of the real

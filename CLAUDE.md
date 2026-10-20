@@ -19,7 +19,7 @@ Key modules:
 
 Use GitHub issues on `pasinit/telos` as the single source of truth for work tracking and planning. Before starting any non-trivial task, check open issues for context. When implementing a feature or fix, reference the relevant issue in commit messages. New work that isn't captured in an issue should be logged as one before proceeding.
 
-Recordatio and Pontifex are tracked separately in `pasinit/recordatio` and `pasinit/pontifex`. If a feature requires changes on both sides, file an issue in each repo and cross-link them.
+Recordatio is tracked separately in `pasinit/recordatio`. If a feature requires changes on both sides, file an issue in each repo and cross-link them.
 
 ## Code Style
 
@@ -41,7 +41,7 @@ make install            # creates .venv and installs with [dev,ui] extras
 make test               # pytest tests/ -v
 make dev                # start FastAPI (:7433) + Vite (:5173) — one command, traps Ctrl+C
 make run                # start the FastAPI backend only (serves the built SPA from telos-web/dist if present)
-make recordatio            # start the Recordatio sidecar (agentmem)
+make recordatio         # start Recordatio from ../recordatio
 make web-build          # build telos-web/dist for production
 make web-dev            # start Vite dev server only
 
@@ -56,4 +56,5 @@ The chat UI is a Svelte SPA under `telos-web/`. When changing UI, run `make dev`
 ## Related Repos
 
 - **Recordatio** (`pasinit/recordatio`) — LLM proxy that injects briefings and extracts knowledge. Telos depends on it via `RECORDATIO_URL`.
-- **Pontifex** (`pasinit/pontifex`) — provider routing layer used inside Recordatio. Pinned in `pyproject.toml`.
+- **Cardea** (`pasinit/cardea`) — durable execution kernel that routines are migrating to; see `telos/cardea_bridge.py` and `packages/telos-cardea/`.
+- A provider-routing library (private) is pinned in `pyproject.toml`.
