@@ -59,6 +59,23 @@ class NightlyConfig:
     model: str
 
 
+@dataclass(frozen=True)
+class MemoryBacklog:
+    """Snapshot of the pending memory-hygiene op queue across the day's users.
+
+    The analyst proposes reversible ops (tombstone/merge/correct) every night,
+    but they only apply when someone clicks them on the dashboard — a page that
+    in practice is never visited, so the queue silently grows and contradicted
+    memory stays live. Surfacing this in the digest turns a pull-only backlog
+    into a pushed, actionable line.
+    """
+
+    pending: int
+    users_with_pending: int
+    oldest_age_days: int | None
+    by_type: dict[str, int]
+
+
 class NightlyFeedbackService:
     def __init__(
         self,
@@ -87,6 +104,7 @@ class NightlyFeedbackService:
         start, end = day_bounds(day)
         total_cost = 0.0
         memory_summaries: list[str] = []
+        backlog: MemoryBacklog | None = None
         client = self._make_client()
         try:
             agents = active_agents(self._cfg.storage_root, day)
@@ -106,14 +124,15 @@ class NightlyFeedbackService:
                     memory_summaries.append(f"{user_id}: {summary}")
             memory_summary = "\n".join(memory_summaries) or None
             self._store.finish_run(run_id, status="completed", memory_summary=memory_summary, cost_usd=total_cost)
+            backlog = await self._memory_backlog(day, sorted({a.user_id for a in agents}), client)
         except Exception as exc:
             log.exception("nightly %s failed", day_str)
             self._store.finish_run(run_id, status="failed", error=f"{exc.__class__.__name__}: {exc}", cost_usd=total_cost)
             await client.aclose()
-            self._send_digest(run_id)
+            self._send_digest(run_id, backlog)
             raise
         await client.aclose()
-        self._send_digest(run_id)
+        self._send_digest(run_id, backlog)
         run = self._store.get_run(run_id)
         assert run is not None
         return run
@@ -201,7 +220,46 @@ class NightlyFeedbackService:
             log.exception("nightly memory reduce for %s failed", user_id)
             return 0.0, None
 
-    def _send_digest(self, run_id: int) -> None:
+    async def _memory_backlog(
+        self, day: date, user_ids: list[str], client: RecordatioFeedbackClient
+    ) -> MemoryBacklog | None:
+        """Best-effort snapshot of the pending memory-hygiene op backlog for the
+        day's users. Returns ``None`` if Recordatio can't be reached, so a
+        memory-side outage never blocks the digest."""
+        try:
+            pending = 0
+            users_with_pending = 0
+            oldest: date | None = None
+            by_type: dict[str, int] = {}
+            for user_id in user_ids:
+                data = await client.get_memory_feedback(user_id)
+                user_pending = 0
+                for rec in data.get("records", []):
+                    try:
+                        rec_day: date | None = date.fromisoformat(rec.get("day", ""))
+                    except ValueError:
+                        rec_day = None
+                    for op in rec.get("ops", []):
+                        if op.get("status") != "pending":
+                            continue
+                        pending += 1
+                        user_pending += 1
+                        op_type = op.get("op_type", "?")
+                        by_type[op_type] = by_type.get(op_type, 0) + 1
+                        if rec_day is not None and (oldest is None or rec_day < oldest):
+                            oldest = rec_day
+                if user_pending:
+                    users_with_pending += 1
+            age = (day - oldest).days if oldest is not None else None
+            return MemoryBacklog(
+                pending=pending, users_with_pending=users_with_pending,
+                oldest_age_days=age, by_type=by_type,
+            )
+        except Exception:
+            log.exception("nightly memory backlog snapshot failed")
+            return None
+
+    def _send_digest(self, run_id: int, backlog: MemoryBacklog | None = None) -> None:
         """Email the owner a summary of the run (best-effort)."""
         if self._email_sink is None or not self._cfg.owner_email:
             return
@@ -211,11 +269,11 @@ class NightlyFeedbackService:
         rows = self._store.list_agent_feedback(run_id)
         try:
             subject = f"Nightly feedback — {run.day} ({run.status})"
-            self._email_sink(self._cfg.owner_email, subject, self._render_digest(run, rows))
+            self._email_sink(self._cfg.owner_email, subject, self._render_digest(run, rows, backlog))
         except Exception:
             log.exception("nightly digest email failed")
 
-    def _render_digest(self, run: NightlyRunRow, rows: list) -> str:
+    def _render_digest(self, run: NightlyRunRow, rows: list, backlog: MemoryBacklog | None = None) -> str:
         """Scannable digest: per-agent scores + truncated blurbs, not full prose.
 
         The complete per-agent feedback and memory findings live in the app
@@ -244,6 +302,20 @@ class NightlyFeedbackService:
         if run.memory_summary:
             excerpt = _truncate(run.memory_summary, 400)
             lines.append(f"<h3>Memory</h3><p>{excerpt}</p>")
+        if backlog is not None:
+            if backlog.pending:
+                breakdown = ", ".join(f"{n} {t}" for t, n in sorted(backlog.by_type.items()))
+                age = (
+                    f", oldest {backlog.oldest_age_days} day(s)"
+                    if backlog.oldest_age_days is not None else ""
+                )
+                lines.append(
+                    f"<h3>Memory-hygiene queue</h3><p><strong>{backlog.pending}</strong> op(s) pending "
+                    f"across {backlog.users_with_pending} user(s){age} ({breakdown}). "
+                    f"Apply the safe ones from the dashboard below.</p>"
+                )
+            else:
+                lines.append("<h3>Memory-hygiene queue</h3><p>No pending ops — queue clear.</p>")
         lines.append(
             f"<hr><p><a href=\"{self._cfg.dashboard_url}\">Open the memory dashboard</a> "
             f"to review the full findings and approve or dismiss the proposed clean-up. "
