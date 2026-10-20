@@ -232,7 +232,14 @@ def test_context_operations_are_gated(monkeypatch):
     ]
     assert {"telos.routine_context", "memory.briefing", "ledger.list"} <= set(spec["template"]["grants"])
     bare = trigger_spec(routine(), ["rightmove_search", "send_email"], BridgeConfig(mode="live", context=True))
-    assert bare is not None and bare["template"]["context"] == [{"operation": "telos.routine_context", "arguments": {}}]
+    # Every Telos turn gets Recordatio's briefing, so agents without memory tools get it too.
+    assert bare is not None and bare["template"]["context"] == [
+        {"operation": "telos.routine_context", "arguments": {}},
+        {"operation": "memory.briefing", "arguments": {"query": "Search listings in E8."}},
+    ]
+    assert "memory.briefing" in bare["template"]["grants"] and "memory.briefing" not in bare["template"]["operations"]
+    long = trigger_spec(routine(description="Search listings. " * 400), ["rightmove_search", "send_email"], BridgeConfig(mode="live", context=True))
+    assert long is not None and len(long["template"]["context"][1]["arguments"]["query"]) == 4000
 
 
 def test_prod_shadow_configuration_keeps_mirroring(monkeypatch):
