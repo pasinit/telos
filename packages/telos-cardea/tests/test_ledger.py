@@ -281,7 +281,8 @@ async def test_reconcile_missing_is_not_applied(config: Config, make_context: Ma
     SCOPE_404, SCOPE_404_TEXT, httpx.Response(404), httpx.Response(404, json={"detail": "Not Found"}),
     # A code that disagrees with the text decides: this is not the by-key miss.
     httpx.Response(404, json={"detail": "No assessment recorded under this key", "code": "something_else"}),
-], ids=["unmapped-scope", "unmapped-scope-text", "empty", "other", "other-code-with-key-text"])
+    httpx.Response(404, json={"detail": "Not Found", "code": "not_found"}),
+], ids=["unmapped-scope", "unmapped-scope-text", "empty", "other", "other-code-with-key-text", "unknown-path"])
 async def test_reconcile_other_404_stays_uncertain(config: Config, make_context: MakeContext, response: httpx.Response) -> None:
     recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): response})
     with pytest.raises(Exception) as caught:
