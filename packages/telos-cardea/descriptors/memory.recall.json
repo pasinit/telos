@@ -59,6 +59,6 @@
     "handler": "memory.recall",
     "effect": "read",
     "timeout_seconds": 60,
-    "max_output_bytes": 131072
+    "max_output_bytes": 61440
   }
 }

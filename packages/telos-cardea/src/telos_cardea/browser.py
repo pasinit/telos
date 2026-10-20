@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from telos_cardea._cardea import Arguments, OperationContext, OperationRejected, Output
 from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
+from telos_cardea.bounded import TRUNCATION_MARK, fit
 
 log = logging.getLogger(__name__)
 
@@ -288,7 +289,13 @@ async def _capture(page: Any, offset: int = 0) -> Output:
     }
     if structured is not None:
         out["structured"] = structured
-    return out
+    # Over Cardea's result cap: fewer controls, a shorter page (the rest stays reachable via
+    # next_offset), then no structured data.
+    fitted, trimmed = fit(out, ("list", "interactive"), ("text", "content"), ("drop", "structured"))
+    if "content" in trimmed:
+        fitted["content"] = fitted["content"].removesuffix(TRUNCATION_MARK)
+        fitted["next_offset"] = offset + len(fitted["content"])
+    return fitted
 
 
 async def render(url: str) -> str:

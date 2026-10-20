@@ -127,6 +127,6 @@
     },
     "effect": "read",
     "timeout_seconds": 180,
-    "max_output_bytes": 196608
+    "max_output_bytes": 61440
   }
 }

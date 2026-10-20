@@ -58,6 +58,6 @@
     "handler": "ledger.history",
     "effect": "read",
     "timeout_seconds": 30,
-    "max_output_bytes": 131072
+    "max_output_bytes": 61440
   }
 }
