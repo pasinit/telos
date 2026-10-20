@@ -21,7 +21,8 @@ from telos_cardea.config import Config, load_config
 
 MAX_PAGE = 200
 MAX_HISTORY_PAGE = 20
-# Telos's by-key 404 detail; any other 404 leaves the effect uncertain.
+# Telos's by-key 404 (code, and the detail text of servers without codes); any other 404 leaves the effect uncertain.
+KEY_NOT_FOUND_CODE = "assessment_not_found"
 KEY_NOT_FOUND = "No assessment recorded under this key"
 
 
@@ -65,14 +66,14 @@ async def reconcile_record(arguments: Arguments, context: OperationContext, *, c
     """Entry point ``ledger.record.reconcile``: look the assessment up by its idempotency key.
 
     - 200: applied, with the stored assessment id;
-    - 404 "No assessment recorded under this key": not applied (Telos commits the key with the
+    - 404 ``assessment_not_found`` (or, without a code, "No assessment recorded under this key"): not applied (Telos commits the key with the
       assessment in the agent's own ledger, so no key means no record);
     - anything else, including an unmapped-scope 404, raises, leaving the effect uncertain.
     """
     response = await telos_api.request(config or load_config(), context, "GET", f"/ledger/assessments/by-key/{context.effect_key}",
                                        allow_not_found=True, client=client)
     if response.status_code == 404:
-        if telos_api.detail(response) != KEY_NOT_FOUND:
+        if not telos_api.is_error(response, KEY_NOT_FOUND_CODE, KEY_NOT_FOUND):
             raise RuntimeError(f"Telos by-key lookup returned an unexpected 404: {telos_api.detail(response)}")
         return Reconciliation(applied=False)
     data = telos_api.json_object(response)

@@ -24,7 +24,9 @@ from telos_cardea.config import Config
 
 API_PREFIX = "/internal/cardea/v1"
 TIMEOUT_SECONDS = 30
-# Telos's 404 detail when the (namespace, agent) has no mirrored routine, as opposed to a missing resource.
+# Telos's 404 when the (namespace, agent) has no mirrored routine, as opposed to a missing resource:
+# the stable error code, and the detail text older servers send without one.
+SCOPE_NOT_FOUND_CODE = "no_mirrored_routine"
 SCOPE_NOT_FOUND = "No mirrored routine for this agent"
 
 
@@ -82,7 +84,7 @@ async def request(config: Config, context: OperationContext, method: str, path: 
     if status in (401, 403):
         raise OperationRejected(f"Telos refused the workload credential ({status}: {detail(response)})")
     if status == 404:
-        if detail(response) == SCOPE_NOT_FOUND:
+        if is_error(response, SCOPE_NOT_FOUND_CODE, SCOPE_NOT_FOUND):
             raise OperationRejected(
                 f"Telos has no mirrored routine for namespace {context.namespace!r} and agent {agent_id(context)!r}")
         if allow_not_found:
@@ -101,13 +103,38 @@ def json_object(response: httpx.Response) -> dict[str, Any]:
     return data
 
 
-def detail(response: httpx.Response) -> str:
-    """FastAPI's ``detail``: a string, or a list of pydantic errors rendered as ``loc: msg``."""
+def _body(response: httpx.Response) -> Any:
     try:
-        data = response.json()
+        return response.json()
     except ValueError:
+        return None
+
+
+def error_code(response: httpx.Response) -> str | None:
+    """The stable error ``code``: top level, or inside a ``detail`` object."""
+    data = _body(response)
+    if not isinstance(data, dict):
+        return None
+    code = data.get("code")
+    if code is None and isinstance(data.get("detail"), dict):
+        code = data["detail"].get("code")
+    return code if isinstance(code, str) else None
+
+
+def is_error(response: httpx.Response, code: str, text: str) -> bool:
+    """Match on the error code when the body has one, else on the detail text."""
+    found = error_code(response)
+    return found == code if found is not None else detail(response) == text
+
+
+def detail(response: httpx.Response) -> str:
+    """FastAPI's ``detail``: a string, a ``{"code", "message"}`` object, or a list of pydantic errors rendered as ``loc: msg``."""
+    data = _body(response)
+    if data is None:
         return response.text[:1000]
     value = data.get("detail", data) if isinstance(data, dict) else data
+    if isinstance(value, dict):
+        value = value.get("message", value.get("msg", value))
     if isinstance(value, list):
         parts = []
         for error in value:

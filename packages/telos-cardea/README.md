@@ -137,8 +137,8 @@ the `api-key` header.
 **Telos scope.** `telos.routine_context` and the `ledger.*` operations send `X-Cardea-Namespace` (the task's
 namespace), `X-Cardea-Agent` (the context's `agent_id`) and, for trigger-admitted runs, `X-Cardea-Slot-Time`
 (the context's `slot_time`). None of them ever comes from tool arguments. A call without an `agent_id` (outside
-an agent run, or on a Cardea that does not yet provide it) is rejected before any request. Telos answers 404
-`"No mirrored routine for this agent"` when that agent has no mirrored routine, which surfaces as
+an agent run, or on a Cardea that does not yet provide it) is rejected before any request. Telos answers 404 with
+code `no_mirrored_routine` when that agent has no mirrored routine, which surfaces as
 `OperationRejected` naming the namespace and agent. Missing `telos.url` or token file, an unreadable or empty
 token file, an unreachable listener, 400, 401/403, any other 404, 409 and 422 are also `OperationRejected`;
 FastAPI validation details are rendered as `field.path: message`. A 503 (Telos cannot fetch the SPIRE bundle)
@@ -157,9 +157,13 @@ model from the Telos source and fails when the descriptors drift.
 **`ledger.record.reconcile`.** `GET /internal/cardea/v1/ledger/assessments/by-key/{effect_key}` with the same scope
 headers.
 - 200 means **applied**, and the output carries the stored `assessment_id` (`duplicate: true`).
-- 404 `"No assessment recorded under this key"` means **not applied**. Telos commits the key with the assessment
+- 404 with code `assessment_not_found` means **not applied**. Telos commits the key with the assessment
   in that agent's ledger, so a missing key means nothing was stored.
 - Any other status, including the unmapped-scope 404, raises and the effect stays uncertain.
+
+Error bodies are matched on their stable `code` (top level, or inside a `detail` object). Only a body
+without a code is matched on Telos's detail text (`"No mirrored routine for this agent"`,
+`"No assessment recorded under this key"`), for servers that predate codes.
 
 **`ledger.list` / `ledger.history`.** `ledger.list` pages the latest assessment per listing (`limit` up to 200,
 `next_offset` null on the last page). `ledger.history` returns `{"history": [...]}` for one URL, newest first,

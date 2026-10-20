@@ -17,9 +17,13 @@ from conftest import AGENT, EFFECT_KEY, PACKAGE_ROOT, TOKEN, assert_input, asser
 
 MakeContext = Callable[..., OperationContext]
 BASE = "http://telos.test:7445/internal/cardea/v1"
-# Telos's exact 404 details (telos/api/internal_cardea.py).
-SCOPE_404 = httpx.Response(404, json={"detail": "No mirrored routine for this agent"})
-KEY_404 = httpx.Response(404, json={"detail": "No assessment recorded under this key"})
+# Telos's 404s (telos/api/internal_cardea.py): with stable codes, and the text-only form of servers without them.
+SCOPE_404 = httpx.Response(404, json={"detail": "No mirrored routine for this agent", "code": "no_mirrored_routine"})
+KEY_404 = httpx.Response(404, json={"detail": "No assessment recorded under this key", "code": "assessment_not_found"})
+SCOPE_404_NESTED = httpx.Response(404, json={"detail": {"code": "no_mirrored_routine", "message": "No mirrored routine for this agent"}})
+KEY_404_NESTED = httpx.Response(404, json={"detail": {"code": "assessment_not_found", "message": "No assessment recorded under this key"}})
+SCOPE_404_TEXT = httpx.Response(404, json={"detail": "No mirrored routine for this agent"})
+KEY_404_TEXT = httpx.Response(404, json={"detail": "No assessment recorded under this key"})
 CRITERIA = ("budget", "postcode", "bedrooms", "lounge", "ceilings", "flooring", "building", "size", "floor", "availability")
 ASSESSMENT: dict[str, Any] = {
     "url": "https://www.example.com/properties/1001",
@@ -121,8 +125,11 @@ async def test_empty_token_file_is_rejected(config: Config, make_context: MakeCo
         await ledger.list_({}, make_context(), config=config, client=Recorder({}).client())
 
 
-async def test_unmapped_scope_is_a_clear_rejection(config: Config, make_context: MakeContext) -> None:
-    recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): SCOPE_404})
+@pytest.mark.parametrize("response", [SCOPE_404, SCOPE_404_NESTED, SCOPE_404_TEXT,
+                                      httpx.Response(404, json={"detail": "Reworded later", "code": "no_mirrored_routine"})],
+                         ids=["code", "nested-code", "text", "code-wins-over-text"])
+async def test_unmapped_scope_is_a_clear_rejection(config: Config, make_context: MakeContext, response: httpx.Response) -> None:
+    recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): response})
     with pytest.raises(OperationRejected, match="no mirrored routine for namespace 'telos-owner' and agent 'telos-homey'"):
         await ledger.list_({}, make_context(), config=config, client=recorder.client())
 
@@ -214,6 +221,13 @@ async def test_record_invalid_assessment_is_rejected(config: Config, make_contex
         await ledger.record({**ASSESSMENT, "disposition": "rejected"}, make_context(), config=config, client=recorder.client())
 
 
+async def test_coded_detail_object_is_readable(config: Config, make_context: MakeContext) -> None:
+    body = {"detail": {"code": "ledger_rule", "message": "Applied properties remain excluded; an explicit user correction is required"}}
+    recorder = Recorder({("POST", "/internal/cardea/v1/ledger/assessments"): httpx.Response(422, json=body)})
+    with pytest.raises(OperationRejected, match=r"\(422\): Applied properties remain excluded"):
+        await ledger.record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
+
+
 async def test_validation_error_list_is_readable(config: Config, make_context: MakeContext) -> None:
     detail = {"detail": [{"loc": ["body", "criteria", "budget", "evidence"], "msg": "String should have at least 1 character",
                           "type": "string_too_short"}]}
@@ -254,14 +268,20 @@ async def test_reconcile_found_is_applied(config: Config, make_context: MakeCont
     assert request.headers["X-Cardea-Agent"] == AGENT and request.headers["Authorization"] == f"Bearer {TOKEN}"
 
 
-async def test_reconcile_missing_is_not_applied(config: Config, make_context: MakeContext) -> None:
-    recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): KEY_404})
+@pytest.mark.parametrize("response", [KEY_404, KEY_404_NESTED, KEY_404_TEXT,
+                                      httpx.Response(404, json={"detail": "Reworded later", "code": "assessment_not_found"})],
+                         ids=["code", "nested-code", "text", "code-wins-over-text"])
+async def test_reconcile_missing_is_not_applied(config: Config, make_context: MakeContext, response: httpx.Response) -> None:
+    recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): response})
     result = await ledger.reconcile_record(dict(ASSESSMENT), make_context(), config=config, client=recorder.client())
     assert result.applied is False and result.output is None
 
 
-@pytest.mark.parametrize("response", [SCOPE_404, httpx.Response(404), httpx.Response(404, json={"detail": "Not Found"})],
-                         ids=["unmapped-scope", "empty", "other"])
+@pytest.mark.parametrize("response", [
+    SCOPE_404, SCOPE_404_TEXT, httpx.Response(404), httpx.Response(404, json={"detail": "Not Found"}),
+    # A code that disagrees with the text decides: this is not the by-key miss.
+    httpx.Response(404, json={"detail": "No assessment recorded under this key", "code": "something_else"}),
+], ids=["unmapped-scope", "unmapped-scope-text", "empty", "other", "other-code-with-key-text"])
 async def test_reconcile_other_404_stays_uncertain(config: Config, make_context: MakeContext, response: httpx.Response) -> None:
     recorder = Recorder({("GET", f"/internal/cardea/v1/ledger/assessments/by-key/{EFFECT_KEY}"): response})
     with pytest.raises(Exception) as caught:
