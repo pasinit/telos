@@ -56,6 +56,12 @@ LEDGER_OPERATIONS: dict[str, str | None] = {
     "list_property_candidates": "ledger.list",
     "record_property_assessment": "ledger.record",
 }
+# Telos tools with no operation of their own that another installed operation covers:
+# tool -> (operation, how to use it in place of the tool). Used only when that operation is
+# mapped for some tool and the tool has no explicit ``TELOS_CARDEA_OPERATIONS`` entry.
+TOOL_ALIASES: dict[str, tuple[str, str]] = {
+    "browser_read": ("browser.open", "again with the same `url` and `offset` set to `next_offset` from the previous result"),
+}
 KERNEL_RIGHTS = (
     "objects.read",
     "objects.write",
@@ -240,7 +246,9 @@ def tools_appendix(mapped: dict[str, str], dropped: Iterable[str]) -> str:
     ]
     for tool, operation in mapped.items():
         note = PREVIEW_NOTES.get(operation)
-        lines.append(f"- {tool}: use `{tool_name(operation)}`" + (f" ({note})" if note else ""))
+        alias = TOOL_ALIASES.get(tool)
+        usage = f" {alias[1]}" if alias and alias[0] == operation else ""
+        lines.append(f"- {tool}: use `{tool_name(operation)}`{usage}" + (f" ({note})" if note else ""))
     if dropped := list(dropped):
         lines += ["", "Not available in this run (do not try to use them): " + ", ".join(dropped) + "."]
     return "\n".join(lines)
@@ -327,8 +335,11 @@ def plan(
         return MirrorPlan(mode, None, reason="schedule has no cron equivalent")
     mapped: dict[str, str] = {}
     dropped: list[str] = []
+    installed = {op for op in config.operations.values() if op}
     for tool in dict.fromkeys(agent_tools):
         name = config.operations.get(tool)
+        if tool not in config.operations and (alias := TOOL_ALIASES.get(tool)) and alias[0] in installed:
+            name = alias[0]
         if not name:
             dropped.append(tool)
             continue

@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from telos.cardea_bridge import (
+    DEFAULT_OPERATIONS,
     GRACE_SECONDS,
     TRUNCATED_NOTE,
     BridgeConfig,
@@ -505,3 +506,28 @@ def test_mirror_resolves_the_recipient_per_user(cardea: Cardea):
     quiet = cardea.triggers["telos.quiet"]["definition"]["template"]
     assert "Send the summary email to: sam@example.com" in loud["instructions"] and "mail.send" in loud["operations"]
     assert "mail.send" not in quiet["operations"] and quiet["expect"] == []
+
+
+def test_browser_read_is_served_by_browser_open():
+    tools = ["browser_open", "browser_read", "send_email"]
+    spec = trigger_spec(routine(), tools, BridgeConfig(mode="live"))  # no ALLOW_DROP needed
+    assert spec is not None
+    assert spec["template"]["operations"] == ["browser.open", "mail.send"]
+    text = spec["template"]["instructions"]
+    assert "- browser_read: use `browser-open` again with the same `url` and `offset` set to `next_offset` from the previous result" in text
+    assert "- browser_open: use `browser-open`\n" in text and "Not available" not in text
+
+
+def test_browser_read_alias_without_browser_open_tool():
+    spec = trigger_spec(routine(), ["browser_read", "send_email"], BridgeConfig(mode="live"))
+    assert spec is not None and spec["template"]["operations"] == ["browser.open", "mail.send"]
+
+
+def test_browser_read_stays_dropped_when_browser_open_is_not_installed():
+    prod = {**DEFAULT_OPERATIONS, "browser_open": None, "browser_click": None}
+    tools = ["rightmove_search", "browser_open", "browser_read", "send_email"]
+    mirror = plan(routine(), tools, BridgeConfig(mode="shadow", operations=prod))
+    assert mirror.spec is not None and mirror.dropped == ("browser_open", "browser_read")
+    assert plan(routine(), tools, BridgeConfig(mode="live", operations=prod)).spec is None
+    explicit = plan(routine(), tools, BridgeConfig(mode="shadow", operations={**DEFAULT_OPERATIONS, "browser_read": None}))
+    assert explicit.dropped == ("browser_read",)
