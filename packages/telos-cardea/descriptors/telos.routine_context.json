@@ -1,0 +1,70 @@
+{
+  "tool": {
+    "name": "telos.routine_context",
+    "title": "Routine context",
+    "description": "This agent's routine context from Telos: reporting date and timezone, recent deliveries, the property ledger summary and reserved recall. Read it before starting the routine.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "invocation": {
+          "type": "object",
+          "properties": {
+            "reporting_date": {
+              "type": "string"
+            },
+            "timezone": {
+              "type": "string"
+            },
+            "slot_time": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "reporting_date",
+            "timezone",
+            "slot_time"
+          ]
+        },
+        "delivery_history": {
+          "type": "string"
+        },
+        "ledger_summary": {
+          "type": "string"
+        },
+        "reserved_recall": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "invocation",
+        "delivery_history",
+        "ledger_summary",
+        "reserved_recall"
+      ],
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "telos.routine_context",
+    "effect": "read",
+    "timeout_seconds": 30,
+    "max_output_bytes": 131072
+  }
+}

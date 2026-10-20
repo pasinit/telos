@@ -21,6 +21,12 @@ EXPECTED = {
     "browser.open": "read",
     "browser.click": "read",
     "memory.recall": "read",
+    "memory.briefing": "read",
+    "telos.routine_context": "read",
+    "ledger.list": "read",
+    "ledger.history": "read",
+    "ledger.record": "effect",
+    "ledger.record_preview": "read",
 }
 
 
@@ -67,6 +73,16 @@ def test_mail_send_scope_is_one_email_per_recipient() -> None:
 
 def test_preview_shares_send_input_schema() -> None:
     assert load_descriptor("mail.preview").input_schema == load_descriptor("mail.send").input_schema
+
+
+def test_ledger_record_scope_is_one_assessment_per_url() -> None:
+    binding = load_descriptor("ledger.record").cardea
+    assert binding.idempotency_scope == ("/url",)
+    assert binding.reconciler == "ledger.record.reconcile"
+
+
+def test_ledger_preview_shares_record_input_schema() -> None:
+    assert load_descriptor("ledger.record_preview").input_schema == load_descriptor("ledger.record").input_schema
 
 
 def test_read_operation_with_scope_is_refused() -> None:

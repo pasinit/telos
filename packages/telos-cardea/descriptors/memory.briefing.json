@@ -1,0 +1,54 @@
+{
+  "tool": {
+    "name": "memory.briefing",
+    "title": "Memory briefing",
+    "description": "This agent's long-term memory briefing (Recordatio) for a task: the same briefing the agent would receive at the start of a conversation.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "What the run is about, e.g. the routine description."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "briefing": {
+          "type": "string"
+        },
+        "units": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "briefing",
+        "units"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.briefing",
+    "effect": "read",
+    "timeout_seconds": 60,
+    "max_output_bytes": 131072
+  }
+}

@@ -1,4 +1,6 @@
+import dataclasses
 import json
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +25,8 @@ except ImportError:
     CARDEA = vendored
 
 EFFECT_KEY = "a" * 64
+AGENT = "telos-homey"
+TOKEN = "header.payload.signature"
 
 
 def descriptor_files() -> list[Path]:
@@ -45,21 +49,40 @@ def assert_input(name: str, arguments: dict[str, Any]) -> None:
 
 @pytest.fixture
 def make_context() -> Callable[..., OperationContext]:
-    def make(namespace: str = "telos-owner", effect_key: str = EFFECT_KEY, deadline: datetime | None = None) -> OperationContext:
-        return OperationContext(task_id="t1", namespace=namespace, receipt_id="r1",
+    def make(namespace: str = "telos-owner", effect_key: str = EFFECT_KEY, deadline: datetime | None = None,
+             agent_id: str | None = AGENT, slot_time: str | None = None, idempotency_context: str | None = None) -> OperationContext:
+        base = OperationContext(task_id="t1", namespace=namespace, receipt_id="r1",
                                 deadline=deadline or datetime.now(UTC) + timedelta(minutes=1), effect_key=effect_key)
+        added = {"agent_id": agent_id, "slot_time": slot_time, "idempotency_context": idempotency_context}
+        names = {f.name for f in dataclasses.fields(base)}
+        if set(added) <= names:
+            return dataclasses.replace(base, **added)
+        # A Cardea that predates these fields: handlers read them with getattr.
+        extended = dataclasses.make_dataclass("ExtendedContext", [(k, str | None, None) for k in added], bases=(type(base),), frozen=True)
+        context: OperationContext = extended(**dataclasses.asdict(base), **added)
+        return context
 
     return make
 
 
 @pytest.fixture
-def config() -> Config:
+def token_file(tmp_path: Path) -> Path:
+    path = tmp_path / "telos-internal.jwt"
+    path.write_text(TOKEN + "\n")
+    os.chmod(path, 0o600)
+    return path
+
+
+@pytest.fixture
+def config(token_file: Path) -> Config:
     return Config(
         smtp=SmtpConfig(host="smtp-relay.brevo.com", port=587, user="login@example.com", password="secret", from_addr="Telos <telos@example.org>"),
         brevo_api_key="brevo-key",
         recordatio_url="http://recordatio.test:8787",
         recordatio_api_key="chat-key",
-        recordatio_scopes={"telos-owner": RecordatioScope(user_id="owner", slug="homey")},
+        recordatio_scopes={f"telos-owner/{AGENT}": RecordatioScope(user_id="owner", slug="homey")},
+        telos_url="http://telos.test:7445",
+        telos_token_file=str(token_file),
         search_engine="serper",
         serper_key="serper-key",
     )
