@@ -16,7 +16,7 @@ from conftest import CARDEA, DESCRIPTORS, PACKAGE_ROOT
 CONFINED = DESCRIPTORS / "confined"
 HOST_WORKERS = PACKAGE_ROOT / "deploy" / "cardea-host-workers.example.json"
 TIMEOUTS = {"browser.open": 150, "browser.click": 150, "listings.rightmove_search": 180, "listings.zoopla_search": 180,
-            "listings.agency_search": 180}
+            "listings.onthemarket_search": 180, "listings.agency_search": 180}
 # The worker prints {"output": ...} with json.dumps (ASCII escapes); the helper refuses stdout over 256 KiB.
 STDOUT_MARGIN_BYTES = 196608
 # From cardea.hosts.launcher at the pinned commit.
@@ -88,7 +88,7 @@ def test_example_config_respects_helper_rules() -> None:
 
 def test_allow_list_covers_every_source() -> None:
     hosts = host_workers()["profiles"]["browser"]["network"]["hosts"]
-    sources = ["www.rightmove.co.uk", "www.zoopla.co.uk", "challenges.cloudflare.com"]
+    sources = ["www.rightmove.co.uk", "www.zoopla.co.uk", "www.onthemarket.com", "challenges.cloudflare.com"]
     sources += [f"www.{impl.host}" for impl in agencies.REGISTRY.values()] + [impl.host for impl in agencies.REGISTRY.values()]
     assert [host for host in sources if not allowed(host, hosts)] == []
 

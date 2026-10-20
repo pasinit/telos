@@ -14,6 +14,8 @@ dependencies = [
     "curl_cffi>=0.7",
     "httpx>=0.27",
     "mistune>=3.0",
+    # The vendored OnTheMarket parser validates Next.js state with pydantic models.
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +31,7 @@ browser = ["patchright"]
 "mail.preview" = "telos_cardea.mail:preview"
 "listings.rightmove_search" = "telos_cardea.listings:rightmove_search"
 "listings.zoopla_search" = "telos_cardea.listings:zoopla_search"
+"listings.onthemarket_search" = "telos_cardea.listings:onthemarket_search"
 "listings.agency_search" = "telos_cardea.listings:agency_search"
 "web.search" = "telos_cardea.web:search"
 "browser.open" = "telos_cardea.browser:open_page"

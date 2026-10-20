@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from telos_cardea._cardea import Arguments, OperationContext, OperationRejected, Output
-from telos_cardea._vendor import agencies, rightmove, zoopla
+from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
 
 log = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ def is_post_submit(facts: dict[str, Any]) -> bool:
 
 
 def _structured(url: str, html: str) -> dict[str, Any] | None:
-    for site in (rightmove, zoopla, agencies):
+    for site in (rightmove, zoopla, onthemarket, agencies):
         try:
             result = site.enrich(url, html)
         except Exception:
