@@ -6,7 +6,17 @@ from pathlib import Path
 import httpx
 import pytest
 
-from telos.cardea_bridge import GRACE_SECONDS, BridgeConfig, CardeaClient, RoutineMirror, cron_for, plan, trigger_spec
+from telos.cardea_bridge import (
+    GRACE_SECONDS,
+    TRUNCATED_NOTE,
+    BridgeConfig,
+    CardeaClient,
+    RoutineMirror,
+    cron_for,
+    plan,
+    request_bytes,
+    trigger_spec,
+)
 from telos.core.repos.routines import Routine
 from telos.routines import RoutineRunner
 
@@ -389,3 +399,57 @@ async def test_skipping_for_cardea_advances_last_run(tmp_path: Path):
     await RoutineRunner(store, execute, owned_elsewhere=lambda r: True)._run_routine(created)  # noqa: SLF001
     current = store.get(created.id)
     assert current is not None and current.last_run is not None
+
+
+def test_large_prompt_is_trimmed_to_fit_the_request_cap():
+    prompt = "Prompt line with a quote \" and é.\n" * 1500  # ~55 KB once JSON-escaped
+    mirror = plan(routine(), TOOLS, LIVE, system_prompt=prompt, siblings=[routine(), routine(id="weekly", name="Weekly digest")])
+    assert mirror.spec is not None and mirror.trimmed is not None
+    full, kept = mirror.trimmed
+    assert full == len(prompt.strip()) and 0 < kept < full
+    assert 32768 - 512 < request_bytes(mirror.spec) <= 32768
+    text = mirror.spec["template"]["instructions"]
+    assert text.startswith("Prompt line") and TRUNCATED_NOTE in text
+    untrimmed = trigger_spec(routine(), TOOLS, LIVE, siblings=[routine(), routine(id="weekly", name="Weekly digest")])
+    assert untrimmed is not None
+    tail = untrimmed["template"]["instructions"]
+    assert tail.startswith("## Routine") and text.endswith(tail)  # routine, fence and appendix intact
+    roomy = BridgeConfig(**{**LIVE.__dict__, "max_request_bytes": 131072})
+    assert plan(routine(), TOOLS, roomy, system_prompt=prompt).trimmed is None
+
+
+def test_small_prompt_is_not_trimmed():
+    mirror = plan(routine(), TOOLS, LIVE, system_prompt="You are Scout.")
+    assert mirror.trimmed is None and mirror.spec is not None
+    assert TRUNCATED_NOTE not in mirror.spec["template"]["instructions"]
+
+
+def test_max_request_bytes_from_env(monkeypatch):
+    monkeypatch.delenv("TELOS_CARDEA_MAX_REQUEST_BYTES", raising=False)
+    assert BridgeConfig.from_env().max_request_bytes == 32768
+    monkeypatch.setenv("TELOS_CARDEA_MAX_REQUEST_BYTES", "131072")
+    assert BridgeConfig.from_env().max_request_bytes == 131072
+
+
+def test_too_large_update_keeps_the_installed_trigger(cardea: Cardea):
+    alerts: list[tuple[str, str]] = []
+    prompt = {"text": "You are Scout."}
+    mirror = RoutineMirror(
+        cardea.client(), lambda: [routine()], lambda user, slug: TOOLS,
+        agent_prompt=lambda user, slug: prompt["text"], on_refusal=lambda rid, why: alerts.append((rid, why)),
+    )
+    mirror.sync()
+    installed = cardea.triggers["telos.73103f92fad9"]
+    prompt["text"] = "You are Scout, revised."
+    cardea.refuse["telos.73103f92fad9"] = (413, {"code": "request_too_large"})
+    assert mirror.sync() == {"telos.73103f92fad9": "refused"}
+    assert cardea.triggers["telos.73103f92fad9"] is installed  # not deleted, not replaced
+    assert mirror.owned_elsewhere(routine())  # the installed version still runs in Cardea
+    assert len(alerts) == 1 and "request_too_large" in alerts[0][1]
+
+
+def test_too_large_first_install_runs_locally(cardea: Cardea):
+    cardea.refuse["telos.73103f92fad9"] = (413, {"code": "request_too_large"})
+    mirror = RoutineMirror(cardea.client(), lambda: [routine()], lambda user, slug: TOOLS)
+    assert mirror.sync() == {"telos.73103f92fad9": "refused"}
+    assert not mirror.owned_elsewhere(routine())

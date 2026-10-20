@@ -76,7 +76,13 @@ MODES = ("off", "shadow", "live")
 GRACE_SECONDS = 3 * 3600
 # Cardea answers these when it has understood and rejected the trigger (validation,
 # operation_not_installed, ...). Auth failures (401/403) mean a stale token, not a refusal.
-REFUSALS = frozenset({400, 404, 409, 422})
+# 413 (request_too_large) is a refusal too, but of this version only: the installed one is kept.
+REFUSALS = frozenset({400, 404, 409, 413, 422})
+TOO_LARGE = 413
+# Room left under Cardea's request cap for headers-free framing differences (httpx encodes
+# more compactly than ``json.dumps`` defaults, which is what the budget measures).
+REQUEST_MARGIN = 256
+TRUNCATED_NOTE = "[The system prompt above was truncated to fit Cardea's request size limit.]"
 EMAIL_LINE = "When you are done, email the user one summary of the results."
 _SAYS_ONE_EMAIL = re.compile(r"\b(one|a single|exactly one)\s+(summary\s+)?e-?mail\b|\be-?mail the user (one|a single)\b", re.IGNORECASE)
 _SAFE = re.compile(r"[^A-Za-z0-9._:-]")
@@ -116,6 +122,8 @@ class BridgeConfig:
     context: bool = False
     # Consecutive failed syncs before the operator is alerted.
     alert_after: int = 3
+    # Cardea's cap on a whole request body; trigger specs are trimmed to fit under it.
+    max_request_bytes: int = 32768
 
     @classmethod
     def from_env(cls) -> Self:
@@ -140,6 +148,7 @@ class BridgeConfig:
             allow_drop=frozenset(str(t) for t in allow_drop),
             context=_flag("TELOS_CARDEA_CONTEXT"),
             alert_after=max(1, int(os.getenv("TELOS_CARDEA_ALERT_AFTER", "3"))),
+            max_request_bytes=int(os.getenv("TELOS_CARDEA_MAX_REQUEST_BYTES", "32768")),
         )
 
     @property
@@ -163,6 +172,8 @@ class MirrorPlan:
     spec: dict[str, Any] | None
     dropped: tuple[str, ...] = ()
     reason: str = ""
+    # (original, kept) system prompt chars when the prompt was trimmed to fit the request cap.
+    trimmed: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -231,18 +242,36 @@ def tools_appendix(mapped: dict[str, str], dropped: Iterable[str]) -> str:
 
 
 def compose_instructions(
-    routine: Routine, mapped: dict[str, str], dropped: Iterable[str], *, system_prompt: str = "", note: str = ""
+    routine: Routine,
+    mapped: dict[str, str],
+    dropped: Iterable[str],
+    *,
+    system_prompt: str = "",
+    note: str = "",
+    prompt_chars: int | None = None,
 ) -> str:
     """Agent prompt + ``## Routine`` (description, sibling fence, email line) + tools appendix.
 
-    Over Cardea's limit, the system prompt is trimmed so the routine and tools always fit.
+    The system prompt alone is trimmed (to ``prompt_chars``, and to Cardea's instructions limit)
+    so the routine and tools always fit; a trimmed prompt is followed by ``TRUNCATED_NOTE``.
     """
     routine_part = routine.description + note
     if routine.notify_email and not _SAYS_ONE_EMAIL.search(system_prompt + "\n" + routine.description):
         routine_part += "\n\n" + EMAIL_LINE
     tail = f"## Routine\n\n{routine_part}\n\n{tools_appendix(mapped, dropped)}"
-    head = system_prompt.strip()[: max(0, _MAX_INSTRUCTIONS - len(tail) - 2)]
+    prompt = system_prompt.strip()
+    limit = max(0, _MAX_INSTRUCTIONS - len(tail) - len(TRUNCATED_NOTE) - 4)
+    if prompt_chars is not None:
+        limit = min(limit, prompt_chars)
+    head = prompt[:limit]
+    if len(head) < len(prompt):
+        head = f"{head}\n\n{TRUNCATED_NOTE}" if head else TRUNCATED_NOTE
     return (f"{head}\n\n{tail}" if head else tail)[:_MAX_INSTRUCTIONS]
+
+
+def request_bytes(spec: dict[str, Any]) -> int:
+    """Size of ``spec`` as a request body (``json.dumps`` defaults: an upper bound on httpx's)."""
+    return len(json.dumps(spec).encode())
 
 
 def context_calls(routine: Routine, operations: list[str]) -> list[dict[str, Any]]:
@@ -292,7 +321,7 @@ def plan(
         "agent_id": identifier(f"telos-{routine.agent_slug}"),
         "namespace": identifier(f"telos-{routine.user_id}"),
         "objective": (routine.name or routine.description)[:1024],
-        "instructions": compose_instructions(routine, mapped, dropped, system_prompt=system_prompt, note=note),
+        "instructions": "",
         "operations": operations,
         "grants": [*KERNEL_RIGHTS, *operations],
         "payload": {},
@@ -312,7 +341,27 @@ def plan(
         "template_kind": "agent-run",
         "template": template,
     }
-    return MirrorPlan(mode, spec, tuple(dropped))
+
+    def fits(prompt_chars: int | None) -> bool:
+        template["instructions"] = compose_instructions(
+            routine, mapped, dropped, system_prompt=system_prompt, note=note, prompt_chars=prompt_chars
+        )
+        return request_bytes(spec) <= budget
+
+    budget = config.max_request_bytes - REQUEST_MARGIN
+    full = len(system_prompt.strip())
+    if fits(None) or not full:
+        return MirrorPlan(mode, spec, tuple(dropped))
+    # The longest prompt prefix whose spec fits; with none fitting, Cardea's 413 is surfaced.
+    low, high = 0, full
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle - 1
+    fits(low)
+    return MirrorPlan(mode, spec, tuple(dropped), trimmed=(full, low))
 
 
 def trigger_spec(
@@ -390,8 +439,9 @@ class RoutineMirror:
       syncs have failed (Cardea unreachable, stale token, 5xx), and again each time the count
       doubles; the count resets after a fully successful sync.
     - ``on_refusal(routine_id, reason)``: a live routine runs locally because it cannot be
-      mirrored (unmapped tools, no cron) or Cardea refused its trigger; called once per
-      distinct reason.
+      mirrored (unmapped tools, no cron) or Cardea refused its trigger, or Cardea refused a
+      trigger update as too large (any mode; the installed version keeps running); called
+      once per distinct reason.
     """
 
     def __init__(
@@ -473,6 +523,11 @@ class RoutineMirror:
                 accepted[identity] = spec_sha(spec)
                 if mirror.dropped and outcomes[identity] != "unchanged":
                     log.info("cardea trigger %s (%s) runs without %s", identity, mirror.mode, ", ".join(mirror.dropped))
+                if mirror.trimmed and outcomes[identity] != "unchanged":
+                    log.warning(
+                        "cardea trigger %s: system prompt trimmed from %d to %d chars to fit %d request bytes",
+                        identity, *mirror.trimmed, self.client.config.max_request_bytes,
+                    )
                 self._refusals.pop(routine.id, None)
             except (httpx.HTTPError, OSError) as error:
                 reason = _refusal(error) if isinstance(error, httpx.HTTPError) else None
@@ -482,7 +537,11 @@ class RoutineMirror:
                     outcomes[identity] = "error"
                     continue
                 outcomes[identity] = "refused"
-                if mirror.mode == "live":
+                if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == TOO_LARGE:
+                    # Keep the installed version running; Telos runs it only if there is none.
+                    refused[identity] = reason
+                    self._refuse(routine.id, f"Cardea refused the trigger update as too large, keeping the installed version: {reason}")
+                elif mirror.mode == "live":
                     # Remove any older version so Cardea and Telos cannot both run it.
                     wanted.discard(identity)
                     refused[identity] = reason
@@ -545,7 +604,7 @@ class RoutineMirror:
         if self._refusals.get(routine_id) == reason:
             return
         self._refusals[routine_id] = reason
-        log.error("live routine %s runs in Telos, not Cardea: %s", routine_id, reason)
+        log.error("cardea trigger for routine %s not installed: %s", routine_id, reason)
         if self.on_refusal is not None:
             try:
                 self.on_refusal(routine_id, reason)
