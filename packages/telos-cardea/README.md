@@ -134,8 +134,9 @@ and leaves hostnames to the proxy's allow-list, and Chromium is launched with th
    - `PYTHONPATH` replaces `-I`: Cardea's `apps/api` is not installed into its venv (the service also runs with
      `PYTHONPATH`). `-P` keeps the scratch directory off `sys.path`.
    - The listing workers add `TELOS_CARDEA_BROWSER_FALLBACK=1`.
-   - `output_kb: 256` is the helper's maximum. The worker prints `{"output": …}` with ASCII escapes, so the confined
-     listing descriptors cap `max_output_bytes` at 192 KiB to stay under it.
+   - `output_kb: 256` is the helper's maximum. The worker prints `{"output": …}` with ASCII escapes; every
+     descriptor caps `max_output_bytes` at 60 KiB (Cardea's receipt result cap is 64 KiB), well under it, and the
+     handlers trim their own output to fit (`telos_cardea.bounded`).
 
 3. Run the egress proxy on the profile's loopback address (never `127.0.0.1`) with a hostname allow-list equal
    to the profile's `hosts`. For Squid:
