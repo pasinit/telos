@@ -54,6 +54,15 @@ def test_unknown_or_inconsistent_shape_is_not_zero_inventory(state):
     assert onthemarket.enrich(SEARCH_URL, page(state)) is None
 
 
+def test_state_nested_under_page_props_is_read():
+    cards = [{'id': '7', 'details-url': '/details/7/', 'address': 'Example Mews W2', 'bedrooms': 2, 'price': 'GBP 3200 pcm'}]
+    html = '<script id="__NEXT_DATA__" type="application/json">' + json.dumps({
+        'props': {'pageProps': {'initialReduxState': {'results': {'list': cards, 'totalResults': 1}}}},
+    }) + '</script>'
+    data = onthemarket.enrich(SEARCH_URL, html)['data']
+    assert data['count'] == 1 and data['results'][0]['url'] == 'https://www.onthemarket.com/details/7/'
+
+
 def test_explicit_empty_results_are_supported():
     assert onthemarket.enrich(SEARCH_URL, page({'results': {'list': [], 'totalResults': 0}}))['data']['count'] == 0
 
