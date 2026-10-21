@@ -45,6 +45,7 @@ DEFAULT_OPERATIONS: dict[str, str | None] = {
     "send_email": "mail.send",
     "rightmove_search": "listings.rightmove_search",
     "zoopla_search": "listings.zoopla_search",
+    "onthemarket_search": "listings.onthemarket_search",
     "agency_search": "listings.agency_search",
     "web_search": "web.search",
     "browser_open": "browser.open",

@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 
 from pydantic import BaseModel, Field
 
+from telos.domain.portal_locations import location_candidates
 from telos.domain.tools.context import ToolContext, ToolResult
 from telos.domain.tools.schema import oai_schema_for
 
@@ -55,22 +56,25 @@ class RightmoveSearchTool:
         return oai_schema_for(type(self), name=self.name, description=self.description)
 
     async def __call__(self, inp: RightmoveSearchInput, ctx: ToolContext) -> ToolResult:
-        url = _build_search_url(
-            location=inp.location,
-            min_beds=inp.min_beds,
-            max_price=inp.max_price,
-            for_sale=inp.for_sale,
-            max_beds=inp.max_beds,
-        )
-        result = await self._web_fetch(url)
-        usable = result.get("structured", {}).get("kind") == "search_results"
-        if not usable:
-            return ToolResult(
-                text="Rightmove coverage unavailable: no recognised search results. "
-                     "This is not evidence of zero inventory.\n" + result["text"],
-                is_error=True,
+        # "Marylebone W1" has no area page; "Marylebone" and "W1" do.
+        text = ""
+        for area in location_candidates(inp.location) or [inp.location]:
+            url = _build_search_url(
+                location=area,
+                min_beds=inp.min_beds,
+                max_price=inp.max_price,
+                for_sale=inp.for_sale,
+                max_beds=inp.max_beds,
             )
-        return ToolResult(text=result["text"], images=result.get("images") or None)
+            result = await self._web_fetch(url)
+            if result.get("structured", {}).get("kind") == "search_results":
+                return ToolResult(text=result["text"], images=result.get("images") or None)
+            text = result["text"]
+        return ToolResult(
+            text="Rightmove coverage unavailable: no recognised search results. "
+                 "This is not evidence of zero inventory.\n" + text,
+            is_error=True,
+        )
 
 
 def _build_search_url(

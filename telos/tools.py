@@ -45,6 +45,7 @@ from telos.domain.tools import (
 )
 from telos.domain.tools.agency_search import AgencySearchTool
 from telos.domain.tools.property_candidates import ListPropertyCandidatesTool, RecordPropertyAssessmentTool
+from telos.domain.tools.onthemarket import OnTheMarketSearchTool
 from telos.domain.tools.rightmove import RightmoveSearchTool
 from telos.domain.tools.schema import oai_schema_for
 
@@ -126,6 +127,7 @@ class ToolRepository:
         # Site-specific search
         self._register(_builtin(RightmoveSearchTool))
         self._register(_builtin(ZooplaSearchTool))
+        self._register(_builtin(OnTheMarketSearchTool))
         self._register(_builtin(AgencySearchTool))
         self._register(_builtin(RecordPropertyAssessmentTool))
         self._register(_builtin(ListPropertyCandidatesTool))

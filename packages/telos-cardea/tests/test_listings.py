@@ -141,3 +141,12 @@ def test_fetch_heuristics_reject_bot_pages_and_accept_hydration_blobs() -> None:
     assert usable("<html><body>" + prose + "</body></html>")
     # A JS shell is accepted when the wire HTML carries the hydration data.
     assert usable('<html><div id="__next"></div>' + prose + rightmove_page(30) + "</html>")
+
+
+async def test_rightmove_tries_place_and_district_separately(make_context: MakeContext) -> None:
+    good = listings.rightmove_url("W1", 2, 3500, False)
+    fetcher = FakeFetcher({good: rightmove_page(2)}, default="<html>This isn't the place you were looking for!</html>")
+    output = await listings.rightmove_search({"location": "Marylebone W1", "min_beds": 2, "max_price": 3500, "for_sale": False},
+                                             make_context(), fetcher=fetcher)  # type: ignore[arg-type]
+    assert output["status"] == "results" and output["search_url"] == good
+    assert fetcher.urls == [listings.rightmove_url("Marylebone W1", 2, 3500, False), good]
