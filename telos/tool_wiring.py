@@ -56,6 +56,7 @@ from telos.domain.tools import (
 )
 from telos.domain.tools.agency_search import AgencySearchTool, SearchDispatch
 from telos.domain.tools.property_candidates import ListPropertyCandidatesTool, RecordPropertyAssessmentTool
+from telos.domain.tools.onthemarket import OnTheMarketSearchTool
 from telos.domain.tools.rightmove import RightmoveSearchTool
 from telos.mcp import MCPTool, McpToolManager
 from telos.transport.browser import agencies as _agencies
@@ -141,6 +142,7 @@ def build_tools(
         # Site-specific search
         RightmoveSearchTool(web_fetch),
         ZooplaSearchTool(web_fetch),
+        OnTheMarketSearchTool(web_fetch),
         AgencySearchTool(agency_search),
         RecordPropertyAssessmentTool(),
         ListPropertyCandidatesTool(),

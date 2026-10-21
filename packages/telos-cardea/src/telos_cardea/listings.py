@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from telos_cardea._cardea import Arguments, OperationContext, Output
 from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
 from telos_cardea._vendor.agency_types import AGENCY_LABELS, SearchFilters
+from telos_cardea._vendor.portal_locations import location_candidates
 from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 from telos_cardea.fetch import Fetcher
@@ -101,6 +102,10 @@ def onthemarket_url(location: str, min_beds: int | None = None, max_beds: int | 
     return f"https://www.onthemarket.com/{kind}/property/{_location_slug(location)}/" + (f"?{urlencode(params)}" if params else "")
 
 
+def _areas(location: str) -> list[str]:
+    return location_candidates(location) or [location]
+
+
 def _page_number(url: str) -> int:
     try:
         return int(parse_qs(urlparse(url).query).get("page", ["1"])[0])
@@ -126,15 +131,26 @@ async def rightmove_search(arguments: Arguments, context: OperationContext, *, c
                            fetcher: Fetcher | None = None) -> Output:
     """Entry point ``listings.rightmove_search``."""
     fetcher = fetcher or Fetcher(config or load_config())
-    url = rightmove_url(arguments["location"], arguments.get("min_beds"), arguments.get("max_price"),
-                        arguments.get("for_sale", True), arguments.get("max_beds"))
-    try:
-        html = await asyncio.wait_for(fetcher.fetch_html(url), timeout=PORTAL_SEARCH_TIMEOUT_S)
-    except TimeoutError:
-        return _unavailable("rightmove", url, f"timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s")
-    except Exception as error:
-        return _unavailable("rightmove", url, f"fetch failed ({error})")
-    return _results("rightmove", url, rightmove.enrich(url, html)) or _unavailable("rightmove", url, "no recognised search results")
+    # "Marylebone W1" has no area page; "Marylebone" and "W1" do.
+    urls = [rightmove_url(area, arguments.get("min_beds"), arguments.get("max_price"), arguments.get("for_sale", True),
+                          arguments.get("max_beds")) for area in _areas(arguments["location"])]
+    reason = "no recognised search results"
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PORTAL_SEARCH_TIMEOUT_S
+    for url in urls:
+        try:
+            html = await asyncio.wait_for(fetcher.fetch_html(url), timeout=max(0.0, deadline - loop.time()))
+        except TimeoutError:
+            reason = f"timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s"
+            break
+        except Exception as error:
+            reason = f"fetch failed ({error})"
+            continue
+        found = _results("rightmove", url, rightmove.enrich(url, html))
+        if found is not None:
+            return found
+        reason = "no recognised search results"
+    return _unavailable("rightmove", urls[0], reason)
 
 
 async def zoopla_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
@@ -164,8 +180,10 @@ async def onthemarket_search(arguments: Arguments, context: OperationContext, *,
                              fetcher: Fetcher | None = None) -> Output:
     """Entry point ``listings.onthemarket_search``: server HTML, following only observed pagination links."""
     fetcher = fetcher or Fetcher(config or load_config())
-    url = onthemarket_url(arguments["location"], arguments.get("min_beds"), arguments.get("max_beds"), arguments.get("max_price"),
-                          arguments.get("for_sale", True))
+    # Tried in order until one area page is recognised ("Marylebone W1" is a 404; "W1" is not).
+    candidates = [onthemarket_url(area, arguments.get("min_beds"), arguments.get("max_beds"), arguments.get("max_price"),
+                                  arguments.get("for_sale", True)) for area in _areas(arguments["location"])]
+    url = candidates.pop(0)
     max_pages = int(arguments.get("max_pages", 1))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + PORTAL_SEARCH_TIMEOUT_S
@@ -191,6 +209,9 @@ async def onthemarket_search(arguments: Arguments, context: OperationContext, *,
             structured = onthemarket.enrich(page_url, html)
             failure = "no recognised search results"
         if not structured or structured.get("kind") != "search_results":
+            if not visited and candidates and loop.time() < deadline:
+                url = pending = candidates.pop(0)
+                continue
             if not visited:
                 return _unavailable("onthemarket", url, failure)
             warnings.append(f"Failed to read {page_url} ({failure}); retained earlier results")

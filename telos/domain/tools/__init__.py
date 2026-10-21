@@ -30,6 +30,7 @@ from telos.domain.tools.google import (
     GSheetsUpdateTool,
 )
 from telos.domain.tools.memory import MemoryRecallInput, MemoryRecallTool
+from telos.domain.tools.onthemarket import OnTheMarketSearchInput, OnTheMarketSearchTool
 from telos.domain.tools.rightmove import RightmoveSearchInput, RightmoveSearchTool
 from telos.domain.tools.routines import (
     CreateRoutineInput,
@@ -102,5 +103,6 @@ __all__ = [
     "SendEmailTool", "SendEmailInput",
     "MemoryRecallTool", "MemoryRecallInput",
     "RightmoveSearchTool", "RightmoveSearchInput",
+    "OnTheMarketSearchTool", "OnTheMarketSearchInput",
     "ZooplaSearchTool", "ZooplaSearchInput",
 ]

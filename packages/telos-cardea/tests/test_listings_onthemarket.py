@@ -174,3 +174,12 @@ def test_render_js_template() -> None:
     assert render_js_template("https://u/?a=1&render_js=0") == "https://u/?a=1&render_js=true"
     assert render_js_template("https://u/?url={url}") == "https://u/?url={url}"
     assert render_js_template("https://u/?prerender_js=false") == "https://u/?prerender_js=false"
+
+
+async def test_combined_place_and_district_falls_back_to_each(make_context: MakeContext) -> None:
+    good = listings.onthemarket_url("W2", 2, None, 2500, False)
+    fetcher = Pages({good: otm_page([7], total=1)})
+    output = await listings.onthemarket_search({"location": "Bayswater W2", "min_beds": 2, "max_price": 2500, "for_sale": False},
+                                               make_context(), fetcher=fetcher)  # type: ignore[arg-type]
+    assert output["status"] == "results" and output["search_url"] == good and output["pages_visited"] == [good]
+    assert fetcher.urls == [listings.onthemarket_url("Bayswater W2", 2, None, 2500, False), good]
