@@ -56,6 +56,29 @@ async def test_priority_recall_reserves_later_queries_and_reports_counts():
     assert counts["included"] > 0 and counts["omitted"] > 0
 
 
+async def test_priority_recall_surfaces_status_event_beyond_old_k_window_under_swarm():
+    # A broad status probe returns a swarm of distinct-date "no response"
+    # summaries (not collapsed by the exact-dup dedup) with the one interview
+    # status event ranked last, beyond the old hard-coded k=10 window.
+    swarm = [
+        {"id": f"s{i}", "content": f"Submitted application; no response as of 2026-06-{i:02d}" + " " * 40,
+         "asserted_at": f"2026-06-{i:02d}"}
+        for i in range(1, 14)
+    ]
+    interview = {"id": "interview",
+                 "content": "Interview scheduled with Christian Aid for 8-9 June 2026",
+                 "asserted_at": "2026-06-08"}
+    client = Client([{"results": swarm + [interview]}])
+    result = await RoutineRecall(
+        lambda: client, {"owner/jobber": ["Submitted applications subsequent status updates interviews rejections"]},
+        max_chars=2200,
+    )("owner", "jobber")
+    ids = {record["id"] for record in result["records"]}
+    # Old behaviour: interview (rank 14) is sliced away by k=10 and never
+    # retrieved; even if present, the swarm would consume the char budget.
+    assert "interview" in ids
+
+
 async def test_priority_recall_keeps_dated_observations_and_conflicts():
     old = {"id": "old", "content": "Application pending", "asserted_at": "2026-09-01"}
     new = {**old, "id": "new", "asserted_at": "2026-09-11"}
