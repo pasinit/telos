@@ -9,13 +9,16 @@ declares the LLM-facing tool.
 
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
 from telos.domain.portal_locations import location_candidates
 from telos.domain.tools.context import ToolContext, ToolResult
 from telos.domain.tools.schema import oai_schema_for
+
+# Rightmove paginates an area page by a 24-result ``&index=`` offset (index 0, 24, 48, …).
+RIGHTMOVE_PAGE_SIZE = 24
 
 
 class RightmoveSearchInput(BaseModel):
@@ -35,6 +38,12 @@ class RightmoveSearchInput(BaseModel):
         default=True,
         description="True for properties for sale (default), False for to-rent.",
     )
+    max_pages: int = Field(
+        default=1,
+        ge=1,
+        le=5,
+        description="Result pages to read (about 24 cards each), following Rightmove's &index= pagination.",
+    )
 
 
 class RightmoveSearchTool:
@@ -46,7 +55,7 @@ class RightmoveSearchTool:
     name = "rightmove_search"
     description = (
         "Search Rightmove for UK property listings. Builds a search URL from "
-        "the location/filters and returns structured results."
+        "the location/filters, reads up to max_pages result pages and returns structured results."
     )
 
     def __init__(self, web_fetch: Callable[[str], Awaitable[dict[str, Any]]]) -> None:
@@ -68,13 +77,38 @@ class RightmoveSearchTool:
             )
             result = await self._web_fetch(url)
             if result.get("structured", {}).get("kind") == "search_results":
-                return ToolResult(text=result["text"], images=result.get("images") or None)
+                return await self._collect(url, result, inp.max_pages)
             text = result["text"]
         return ToolResult(
             text="Rightmove coverage unavailable: no recognised search results. "
                  "This is not evidence of zero inventory.\n" + text,
             is_error=True,
         )
+
+    async def _collect(self, url: str, first: dict[str, Any], max_pages: int) -> ToolResult:
+        """Follow Rightmove's ``&index=`` pagination, concatenating page texts and flagging the backlog."""
+        texts = [first["text"]]
+        images = list(first.get("images") or [])
+        pages = 1
+        pending = _next_page_url(url, first)
+        while pending is not None and pages < max_pages:
+            try:
+                page = await self._web_fetch(pending)
+            except Exception as exc:  # noqa: BLE001 — surface the failure, keep earlier pages
+                texts.append(f"(Could not read the next Rightmove page {pending}: {type(exc).__name__}; "
+                             "retained earlier results.)")
+                return ToolResult(text="\n\n".join(texts), images=images or None)
+            if page.get("structured", {}).get("kind") != "search_results":
+                texts.append(f"(Could not read the next Rightmove page {pending}; retained earlier results.)")
+                return ToolResult(text="\n\n".join(texts), images=images or None)
+            texts.append(page["text"])
+            images += page.get("images") or []
+            pages += 1
+            pending = _next_page_url(pending, page)
+        if pending is not None:
+            texts.append(f"More Rightmove pages remain unread (next: {pending}). "
+                         "Raise max_pages (up to 5) to cover deeper inventory.")
+        return ToolResult(text="\n\n".join(texts), images=images or None)
 
 
 def _build_search_url(
@@ -101,3 +135,28 @@ def _build_search_url(
     if max_beds is not None:
         params["maxBedrooms"] = str(max_beds)
     return base + area + ".html" + ("?" + urlencode(params) if params else "")
+
+
+def _index_of(url: str) -> int:
+    try:
+        return int(parse_qs(urlparse(url).query).get("index", ["0"])[0])
+    except ValueError:
+        return 0
+
+
+def _with_index(url: str, index: int) -> str:
+    """``url`` with its ``index`` query param set to ``index`` (dropped when 0), other params kept."""
+    parsed = urlparse(url)
+    params = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != "index"]
+    if index:
+        params.append(("index", str(index)))
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
+def _next_page_url(url: str, result: dict[str, Any]) -> str | None:
+    """The next ``&index=`` page URL, or None when this was a short (final) page."""
+    data = (result.get("structured") or {}).get("data") or {}
+    cards = [r for r in data.get("results", []) if isinstance(r, dict)]
+    if len(cards) < RIGHTMOVE_PAGE_SIZE:
+        return None
+    return _with_index(url, _index_of(url) + RIGHTMOVE_PAGE_SIZE)

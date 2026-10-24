@@ -9,7 +9,7 @@ never mistakes it for zero inventory.
 import asyncio
 import re
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from telos_cardea._cardea import Arguments, OperationContext, Output
 from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
@@ -23,6 +23,8 @@ UNAVAILABLE_CAVEAT = "Coverage unavailable; this is not evidence of zero invento
 AGENCY_SEARCH_TIMEOUT_S = 120.0
 # Inside the descriptors' 180 s: curl, unblocker and a browser render can each take a while.
 PORTAL_SEARCH_TIMEOUT_S = 150.0
+# Rightmove paginates an area page by a 24-result ``&index=`` offset (index 0, 24, 48, …).
+RIGHTMOVE_PAGE_SIZE = 24
 
 
 def _bounded(out: Output) -> Output:
@@ -113,6 +115,22 @@ def _page_number(url: str) -> int:
         return 0
 
 
+def _rightmove_index(url: str) -> int:
+    try:
+        return int(parse_qs(urlparse(url).query).get("index", ["0"])[0])
+    except ValueError:
+        return 0
+
+
+def _rightmove_page_url(url: str, index: int) -> str:
+    """``url`` with its ``index`` query param set to ``index`` (dropped when 0), other params kept."""
+    parsed = urlparse(url)
+    params = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != "index"]
+    if index:
+        params.append(("index", str(index)))
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
 def _results(site: str, url: str, structured: dict[str, Any] | None) -> Output | None:
     if not structured or structured.get("kind") != "search_results":
         return None
@@ -129,8 +147,9 @@ def _results(site: str, url: str, structured: dict[str, Any] | None) -> Output |
 
 async def rightmove_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
                            fetcher: Fetcher | None = None) -> Output:
-    """Entry point ``listings.rightmove_search``."""
+    """Entry point ``listings.rightmove_search``: follows Rightmove's ``&index=`` pagination up to max_pages."""
     fetcher = fetcher or Fetcher(config or load_config())
+    max_pages = int(arguments.get("max_pages", 1))
     # "Marylebone W1" has no area page; "Marylebone" and "W1" do.
     urls = [rightmove_url(area, arguments.get("min_beds"), arguments.get("max_price"), arguments.get("for_sale", True),
                           arguments.get("max_beds")) for area in _areas(arguments["location"])]
@@ -146,11 +165,73 @@ async def rightmove_search(arguments: Arguments, context: OperationContext, *, c
         except Exception as error:
             reason = f"fetch failed ({error})"
             continue
-        found = _results("rightmove", url, rightmove.enrich(url, html))
-        if found is not None:
-            return found
+        structured = rightmove.enrich(url, html)
+        if structured and structured.get("kind") == "search_results":
+            return await _rightmove_pages(fetcher, url, structured, max_pages, deadline)
         reason = "no recognised search results"
     return _unavailable("rightmove", urls[0], reason)
+
+
+async def _rightmove_pages(fetcher: Fetcher, base_url: str, structured: dict[str, Any], max_pages: int,
+                           deadline: float) -> Output:
+    """Accumulate Rightmove listings across ``&index=`` pages, deduping by id and reporting the backlog."""
+    loop = asyncio.get_running_loop()
+    listings: dict[str, dict[str, Any]] = {}
+    visited: list[str] = []
+    warnings: list[str] = []
+    total: int | None = None
+    page_truncated = False
+    pending: str | None = base_url
+    stop_reason = "last_page"
+    while pending is not None:
+        if len(visited) >= max_pages:
+            stop_reason = "max_pages"
+            break
+        page_url = pending
+        if page_url == base_url:
+            data = structured.get("data") or {}
+        else:
+            try:
+                html = await asyncio.wait_for(fetcher.fetch_html(page_url), timeout=max(0.0, deadline - loop.time()))
+                page = rightmove.enrich(page_url, html)
+            except TimeoutError:
+                warnings.append(f"Failed to read {page_url} (timed out after {int(PORTAL_SEARCH_TIMEOUT_S)}s); "
+                                "retained earlier results")
+                stop_reason = "page_failed"
+                break
+            except Exception as error:
+                warnings.append(f"Failed to read {page_url} (fetch failed ({error})); retained earlier results")
+                stop_reason = "page_failed"
+                break
+            if not page or page.get("kind") != "search_results":
+                warnings.append(f"Failed to read {page_url} (no recognised search results); retained earlier results")
+                stop_reason = "page_failed"
+                break
+            data = page.get("data") or {}
+        visited.append(page_url)
+        if total is None and isinstance(data.get("total"), int):
+            total = data["total"]
+        if data.get("truncated") is True:
+            page_truncated = True
+        page_results = [r for r in data.get("results", []) if isinstance(r, dict) and r.get("id") is not None]
+        for card in page_results:
+            listings.setdefault(str(card["id"]), card)
+        # A short (or empty) page is the last one; a full page implies another ``&index=`` page exists.
+        if len(page_results) < RIGHTMOVE_PAGE_SIZE or (total is not None and len(listings) >= total):
+            pending = None
+        else:
+            pending = _rightmove_page_url(base_url, _rightmove_index(page_url) + RIGHTMOVE_PAGE_SIZE)
+    out: Output = {"site": "rightmove", "search_url": base_url, "listings": list(listings.values()),
+                   "pages_visited": visited, "pending_urls": [pending] if pending is not None else [],
+                   "warnings": warnings, "stop_reason": stop_reason,
+                   "status": "partial" if warnings else ("results" if listings else "no_matches"),
+                   "caveat": "Search cards are not confirmation of current availability; verify on detail pages."}
+    if total is not None:
+        out["total"] = total
+        out["truncated"] = page_truncated or len(listings) < total or pending is not None
+    elif page_truncated or pending is not None:
+        out["truncated"] = True
+    return _bounded(out)
 
 
 async def zoopla_search(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
