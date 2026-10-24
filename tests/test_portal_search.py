@@ -10,7 +10,7 @@ from telos.core.run_context import RunContext
 from telos.core.tool_context import ToolContext
 from telos.domain.portal_locations import location_candidates
 from telos.domain.tools.onthemarket import OnTheMarketSearchInput, OnTheMarketSearchTool, build_search_url
-from telos.domain.tools.rightmove import RightmoveSearchInput, RightmoveSearchTool, _build_search_url
+from telos.domain.tools.rightmove import RightmoveSearchInput, RightmoveSearchTool, _build_search_url, _with_index
 
 
 def context(tmp_path: Path) -> ToolContext:
@@ -70,6 +70,29 @@ async def test_onthemarket_falls_back_to_district_and_follows_pages(tmp_path: Pa
 async def test_onthemarket_unrecognised_everywhere_is_an_error(tmp_path: Path) -> None:
     result = await OnTheMarketSearchTool(Pages({}))(OnTheMarketSearchInput(location="Nowhere"), context(tmp_path))
     assert result.is_error and "not evidence of zero inventory" in result.text
+
+
+def rm_result(n: int, text: str) -> dict:
+    return {"text": text, "structured": {"kind": "search_results", "data": {"results": [{"id": str(i)} for i in range(n)]}}}
+
+
+async def test_rightmove_tool_follows_index_pagination_and_flags_backlog(tmp_path: Path) -> None:
+    base = _build_search_url("Brixton")
+    page2, page3 = _with_index(base, 24), _with_index(base, 48)
+    # Two full (24-card) pages read, a third still pending at the max_pages=2 cap.
+    fetch = Pages({base: rm_result(24, "page1"), page2: rm_result(24, "page2"), page3: rm_result(3, "page3")})
+    result = await RightmoveSearchTool(fetch)(RightmoveSearchInput(location="Brixton", max_pages=2), context(tmp_path))
+    assert not result.is_error
+    assert fetch.urls == [base, page2]  # the third page is left for a later, wider run
+    assert "page1" in result.text and "page2" in result.text and "page3" not in result.text
+    assert "More Rightmove pages remain unread" in result.text and page3 in result.text
+
+
+async def test_rightmove_tool_short_first_page_has_no_backlog(tmp_path: Path) -> None:
+    base = _build_search_url("Brixton")
+    fetch = Pages({base: rm_result(10, "only page")})
+    result = await RightmoveSearchTool(fetch)(RightmoveSearchInput(location="Brixton", max_pages=3), context(tmp_path))
+    assert fetch.urls == [base] and result.text == "only page"
 
 
 async def test_rightmove_tries_district_then_place(tmp_path: Path) -> None:
