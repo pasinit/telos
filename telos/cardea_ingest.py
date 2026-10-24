@@ -322,7 +322,16 @@ class RunPoller:
             self.routines.save_result(routine.id, text, source_task_id=task_id)
         slot_time = _parse(slot) or _parse(run.get("updated_at")) or self.clock()
         self.routines.mark_run(routine.id, slot_time.astimezone(UTC).isoformat())
-        if reason is not None:
+        if reason is not None and self._delivered_recap(calls):
+            # Cardea can end a run non-successfully (e.g. deadline_exceeded/expectation_exceeded) only
+            # AFTER the agent has already delivered a full recap via mail.send. Firing the usual
+            # "This run failed before completing … No result was produced." notice on top of that recap
+            # contradicts a deliverable the user already received moments earlier, so suppress it. The
+            # turn is still recorded as turn_failed (below, via _history) for operators; this only drops
+            # the contradictory email. This mirrors the in-process guard (test_routine_execution.py:144/247).
+            log.warning("cardea routine %s ended %s but a recap was already delivered; suppressing FAILED notice",
+                        routine.id, reason)
+        elif reason is not None:
             recent = (_parse(run.get("updated_at")) or self.clock()) >= self.clock() - NOTIFY_WINDOW
             if recent:
                 self._notify(routine, reason, partial=text, when=slot, turn_id=turn_id)
@@ -341,6 +350,12 @@ class RunPoller:
         if any(c["operation"] == "mail.send" and c.get("state") == "outcome_unknown" for c in calls):
             return "mail_outcome_unknown"
         return None
+
+    @staticmethod
+    def _delivered_recap(calls: list[dict[str, Any]]) -> bool:
+        """True iff the run already delivered a recap (a succeeded ``mail.send``), so a FAILED
+        'no result was produced' notice on top of it would contradict a deliverable the user has."""
+        return any(c["operation"] == "mail.send" and c.get("state") == "succeeded" for c in calls)
 
     def _history(self, routine: Routine, task_id: str, slot: str | None, run: dict[str, Any], calls: list[dict[str, Any]],
                  text: str, reason: str | None) -> str:
