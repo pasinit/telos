@@ -8,7 +8,9 @@ view of each admitted task it has not ingested yet, and once the run is terminal
   ``ledger.record_preview``): one ``cardea_shadow_runs`` row and
   nothing else, so shadow mode never touches agent history, memory or routine results;
 - **live** run: a routine turn in the agent's ``history.db`` (one ``tool_call``/``tool_result``
-  pair per Cardea call, an ``email_delivery`` row per delivered ``mail.send``, then
+  pair per Cardea call carrying its receipted state and failure code/reason/summary, a
+  ``cardea_run`` row with the run outcome, cost, turns and per-call outcomes (the evidence the
+  nightly review checks the recap against), an ``email_delivery`` row per delivered ``mail.send``, then
   ``turn_completed`` or ``turn_failed``), a ``routine_results`` row keyed by the task id,
   ``last_run`` set to the slot time and, behind ``TELOS_CARDEA_EXTRACT=1``, a Recordatio
   transcript so memory extraction sees the run.
@@ -62,6 +64,10 @@ _TOOL_FOR = {operation: tool for tool, operation in DEFAULT_OPERATIONS.items()}
 # Calls whose full arguments/result Telos records (delivery evidence), fetched per call when the
 # bounded run view only has previews of them.
 FULL_CALLS = frozenset({"mail.send", "mail.preview"})
+# Per-call outcomes copied into the run's ``cardea_run`` evidence row (the nightly review reads
+# it as the receipts' summary); Cardea already bounds failure summaries to 200 characters.
+OUTCOMES_CAP = 100
+SUMMARY_CHARS = 200
 
 
 class RunSource(Protocol):
@@ -94,6 +100,34 @@ def _shown(call: dict[str, Any], part: str) -> Any:
     if call.get(f"{part}_preview") is not None:
         return {"preview": call[f"{part}_preview"], "bytes": call.get(f"{part}_bytes")}
     return None
+
+
+def call_failure(call: dict[str, Any]) -> dict[str, Any] | None:
+    """A non-succeeded call's receipted failure: code, reason and Cardea's sanitized summary.
+
+    The summary carries what the agent saw (e.g. ``HTTP 410 opening <url>`` or a navigation
+    timeout), so it is the evidence a recap's "blocked/timed out" statement is checked against.
+    """
+    if call.get("state") == "succeeded":
+        return None
+    details = call.get("failure_details")
+    details = details if isinstance(details, dict) else {}
+    summary = details.get("summary")
+    failure = {
+        "code": call.get("failure") or call.get("state"),
+        "reason": details.get("reason"),
+        "summary": summary[:SUMMARY_CHARS] if isinstance(summary, str) else None,
+    }
+    return {k: v for k, v in failure.items() if v}
+
+
+def call_outcome(call: dict[str, Any]) -> dict[str, Any]:
+    """One receipt in brief: what was called, how it ended and whether it was a deduplicated replay."""
+    outcome: dict[str, Any] = {"operation": call["operation"], "operation_id": call["operation_id"], "state": call.get("state"),
+                               "deduplicated": bool(call.get("deduplicated"))}
+    if (failure := call_failure(call)) is not None:
+        outcome["failure"] = failure
+    return outcome
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -354,18 +388,25 @@ class RunPoller:
         turn_id = history.append(routine.description, text, "cardea", is_routine=True, trace_id=trace)
         events = history.execution_events
         output = run.get("output") or {}
+        outcomes = [call_outcome(c) for c in calls]
         events.append(turn_id, "cardea_run", {
             "task_id": task_id, "slot": slot, "state": run["state"], "failure": run.get("failure"),
             "attempt": run.get("attempt"), "turns": output.get("turns"), "cost_usd": output.get("cost_usd"),
+            # Cardea's receipts are the authoritative record of what each call of this run did.
+            "evidence": "cardea_receipts", "calls_total": len(calls),
+            "failed_calls": sum(1 for o in outcomes if o["state"] != "succeeded"),
+            "outcomes": outcomes[:OUTCOMES_CAP], "outcomes_omitted": max(len(outcomes) - OUTCOMES_CAP, 0),
         })
         for call in calls:
             name = call["operation"]
+            failure = call_failure(call)
             events.append(turn_id, "tool_call", {
                 "call_id": call["operation_id"], "name": name, "tool": _TOOL_FOR.get(name), "input": _shown(call, "arguments") or {},
             })
             events.append(turn_id, "tool_result", {
                 "call_id": call["operation_id"], "name": name, "is_error": call.get("state") != "succeeded",
-                "state": call.get("state"), "result": shown if (shown := _shown(call, "result")) is not None else call.get("failure"),
+                "state": call.get("state"), "result": shown if (shown := _shown(call, "result")) is not None else failure,
+                "failure": failure,
                 "reconciled": bool(call.get("reconciled")), "deduplicated": bool(call.get("deduplicated")),
             })
             if name == "mail.send" and call.get("state") in {"succeeded", "outcome_unknown"}:

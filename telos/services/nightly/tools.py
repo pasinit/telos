@@ -71,11 +71,17 @@ def _clip(text: str) -> str:
     return f"{text[:_HEAD]}\n…[{len(text) - _HEAD - _TAIL} chars elided]…\n{text[-_TAIL:]}"
 
 
+def _executed_by(t: Turn) -> str:
+    """Who ran the turn: Cardea-ingested routine runs carry a ``cardea:<task id>`` trace id."""
+    return "cardea" if (t.trace_id or "").startswith("cardea:") else "telos"
+
+
 def _turn_summary(t: Turn) -> dict[str, Any]:
     return {
         "turn_id": t.turn_id,
         "timestamp": t.timestamp,
         "is_routine": t.is_routine,
+        "executed_by": _executed_by(t),
         "request_id": t.request_id,
         "flags": {"corrected": t.corrected, "followed_up": t.followed_up, "ignored": t.ignored},
         "user_message": _clip(t.user_message),
@@ -165,6 +171,7 @@ def build_agent_toolset(ctx: ToolContext) -> Toolset:
             "turn_id": t.turn_id,
             "timestamp": t.timestamp,
             "is_routine": t.is_routine,
+            "executed_by": _executed_by(t),
             "request_id": t.request_id,
             "flags": {"corrected": t.corrected, "followed_up": t.followed_up, "ignored": t.ignored},
             "user_message": t.user_message,
