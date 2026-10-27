@@ -32,6 +32,7 @@ import html
 import json
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -135,6 +136,34 @@ def _parse(value: str | None) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(value)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+# Phrases a recap uses to report a tool failure. When every receipted call of a succeeded run
+# reported success (failed_calls == 0) yet the delivered recap still carries one of these, the
+# agent fabricated a failure that the receipts contradict — the week's worst, most persistent
+# defect (false "ALL LEADS UNVERIFIED" / "all detail-page fetches timed out" / "0 of N searched"
+# recaps on runs Cardea's receipts show as e.g. 44/44 succeeded). A prompt rule already citing the
+# incidents failed to stop it, so this is a deterministic run-level guardrail, not a restatement.
+_CONFABULATION_PATTERNS = (
+    r"timed?\s+out",
+    r"\btimeouts?\b",
+    r"\bunverified\b",
+    r"could\s*n[o']?t\s+(?:fetch|reach|open|load|retrieve|verify|confirm)",
+    r"failed\s+to\s+(?:fetch|reach|open|load|retrieve)",
+    r"\b0\s+of\b",
+    r"\bblocked\b",
+)
+_CONFABULATION_RE = re.compile("|".join(f"(?:{p})" for p in _CONFABULATION_PATTERNS), re.IGNORECASE)
+
+
+def confabulated_failures(text: str) -> list[str]:
+    """Distinct failure-claim phrases a recap uses, lower-cased in first-seen order; empty when none."""
+    seen: list[str] = []
+    for match in _CONFABULATION_RE.finditer(text or ""):
+        phrase = " ".join(match.group(0).lower().split())
+        if phrase not in seen:
+            seen.append(phrase)
+    return seen
 
 
 class IngestLedger:
@@ -354,6 +383,7 @@ class RunPoller:
         turn_id = self._history(routine, task_id, slot, run, calls, text, reason)
         if reason is None:
             self.routines.save_result(routine.id, text, source_task_id=task_id)
+            self._check_confabulation(routine, task_id, run, calls, text)
         slot_time = _parse(slot) or _parse(run.get("updated_at")) or self.clock()
         self.routines.mark_run(routine.id, slot_time.astimezone(UTC).isoformat())
         if reason is not None:
@@ -375,6 +405,23 @@ class RunPoller:
         if any(c["operation"] == "mail.send" and c.get("state") == "outcome_unknown" for c in calls):
             return "mail_outcome_unknown"
         return None
+
+    def _check_confabulation(self, routine: Routine, task_id: str, run: dict[str, Any], calls: list[dict[str, Any]],
+                             text: str) -> None:
+        """Alert the operator when a succeeded run whose every call succeeded still delivered a recap
+        claiming tool failures (failed_calls == 0 yet the recap says "timed out"/"unverified"/...).
+
+        This surfaces recap-vs-receipt confabulation the same day the alarming/false email reaches the
+        user, instead of only via the nightly analyst a day later. Gated on a run that fully succeeded
+        so the trigger is a near-certain confabulation signal, not a data-delivery mismatch.
+        """
+        if run.get("state") != "succeeded" or not calls:
+            return
+        if any(c.get("state") != "succeeded" for c in calls):
+            return
+        phrases = confabulated_failures(text)
+        if phrases:
+            on_confabulation(routine.id, task_id, len(calls), phrases)
 
     def _history(self, routine: Routine, task_id: str, slot: str | None, run: dict[str, Any], calls: list[dict[str, Any]],
                  text: str, reason: str | None) -> str:
@@ -501,9 +548,25 @@ def on_refusal(routine_id: str, reason: str) -> None:
     )
 
 
+def on_confabulation(routine_id: str, task_id: str, calls_total: int, phrases: list[str]) -> None:
+    """Ingest hook: a live routine delivered a recap claiming tool failures although every receipted
+    call of the run succeeded (failed_calls == 0) — the agent confabulated a failure the receipts
+    contradict. Alert the operator the same day the recap reaches the user."""
+    quoted = ", ".join(f"<code>{html.escape(p)}</code>" for p in phrases)
+    _alert(
+        f"Telos: routine {routine_id} recap claims failures its receipts contradict",
+        f"<p>Routine <code>{html.escape(routine_id)}</code> delivered a recap reporting tool failures, "
+        f"but all {calls_total} receipted call(s) of this run succeeded (failed_calls=0).</p>"
+        f"<p>Failure-claim phrases found in the recap: {quoted}.</p>"
+        f"<p>Task <code>{html.escape(task_id)}</code>. This is almost certainly recap-vs-receipt "
+        "confabulation, and the alarming recap has already reached the user — check this run's recap "
+        "against its tool log.</p>",
+    )
+
+
 def extract_enabled() -> bool:
     return os.getenv("TELOS_CARDEA_EXTRACT", "0").strip() == "1"
 
 
-__all__ = ["IngestLedger", "RunPoller", "TranscriptSink", "configure_operator_alerts", "extract_enabled",
-           "is_shadow", "on_refusal", "on_sync_failure"]
+__all__ = ["IngestLedger", "RunPoller", "TranscriptSink", "confabulated_failures", "configure_operator_alerts",
+           "extract_enabled", "is_shadow", "on_confabulation", "on_refusal", "on_sync_failure"]

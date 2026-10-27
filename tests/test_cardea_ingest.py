@@ -14,6 +14,7 @@ from telos.cardea_ingest import (
     IngestLedger,
     RunPoller,
     TranscriptSink,
+    confabulated_failures,
     configure_operator_alerts,
     is_shadow,
     on_refusal,
@@ -362,6 +363,83 @@ def test_operator_alerts_deliver_each_bridge_hook_call():
         configure_operator_alerts(sent, "")
     assert cardea_ingest._operator_alert is None  # noqa: SLF001
     on_sync_failure(6, "still down")  # unconfigured: logged, not raised
+
+
+# ── recap-vs-receipt confabulation guardrail ─────────────────────────────────────────────
+
+CONFAB_TEXT = "ALL LEADS UNVERIFIED — all 8 detail-page fetches timed out; 0 of 5 areas searched."
+
+
+def test_confabulated_recap_on_fully_succeeded_run_alerts_operator(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    # Every receipted call succeeded (failed_calls == 0), yet the recap claims tool failures.
+    env["cardea"].runs["task-1"] = run(
+        calls=[call("browser.open", op_id="op-01"), call("mail.send", op_id="op-02")],
+        text=CONFAB_TEXT,
+    )
+    sent = MagicMock()
+    configure_operator_alerts(sent, "ops@example.test")
+    try:
+        # Still a successful delivery to the user; the confabulation alert is separate.
+        assert env["poller"].poll() == {"task-1": "live:succeeded"}
+        sent.assert_called_once()
+        to, subject, body = sent.call_args.args
+        assert to == "ops@example.test"
+        assert rid in subject and "contradict" in subject
+        assert "failed_calls=0" in body
+        assert "timed out" in body and "unverified" in body and "0 of" in body
+        # The confabulation alert is not the routine FAILED notice.
+        env["email"].send_routine_notification.assert_not_called()
+    finally:
+        configure_operator_alerts(sent, "")
+
+
+def test_recap_matching_a_genuinely_failed_call_does_not_alert(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    # A call really did fail, so the "timed out" claim matches the receipts — no confabulation.
+    env["cardea"].runs["task-1"] = run(
+        calls=[call("browser.open", "failed", op_id="op-01"), call("mail.send", op_id="op-02")],
+        text="One detail-page fetch timed out; the remaining leads were verified.",
+    )
+    sent = MagicMock()
+    configure_operator_alerts(sent, "ops@example.test")
+    try:
+        env["poller"].poll()
+        sent.assert_not_called()
+    finally:
+        configure_operator_alerts(sent, "")
+
+
+def test_clean_recap_on_succeeded_run_does_not_alert(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    env["cardea"].runs["task-1"] = run(text="Two new flats in E8, both verified against the listing pages.")
+    sent = MagicMock()
+    configure_operator_alerts(sent, "ops@example.test")
+    try:
+        assert env["poller"].poll() == {"task-1": "live:succeeded"}
+        sent.assert_not_called()
+    finally:
+        configure_operator_alerts(sent, "")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("all 8 detail-page fetches timed out", ["timed out"]),
+        ("ALL LEADS UNVERIFIED", ["unverified"]),
+        ("0 of 5 areas searched", ["0 of"]),
+        ("could not fetch the detail page", ["could not fetch"]),
+        ("the portal blocked us", ["blocked"]),
+        # Low false-positive: "10 of" is not a failure claim, verified leads are clean.
+        ("found 10 of the listings, all verified", []),
+        ("Two new flats in E8.", []),
+    ],
+)
+def test_confabulated_failures_detection(text, expected):
+    assert confabulated_failures(text) == expected
 
 
 def too_large() -> httpx.HTTPStatusError:
