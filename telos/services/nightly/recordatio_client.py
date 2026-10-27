@@ -55,6 +55,17 @@ class RecordatioFeedbackClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_memory_feedback(self, user_id: str) -> dict[str, Any]:
+        """The user's nightly memory-feedback records + per-op lifecycle.
+
+        Shape: ``{"user_id", "records": [{"day", "created_at", "summary",
+        "findings", "ops": [{"op_type", "status", ...}]}]}``. Used to surface
+        the pending memory-hygiene op backlog in the nightly digest.
+        """
+        r = await self._http.get(f"/v1/users/{user_id}/memory-feedback")
+        r.raise_for_status()
+        return r.json()
+
     async def get_briefing(self, request_id: str) -> dict[str, Any]:
         """What Recordatio recalled for a turn (units/entities), by request id.
 
