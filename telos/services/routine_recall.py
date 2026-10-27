@@ -3,12 +3,32 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+# A broad routine probe (e.g. "submitted job applications subsequent status
+# updates") returns a swarm of low-information "submitted"/"no response"
+# summaries that differ only by date, so they are NOT collapsed by the
+# exact-duplicate dedup below. Two mechanisms keep a status-event needle from
+# being buried under that swarm:
+#   * PER_QUERY_K pulls a deep enough candidate pool that a tail record ranked
+#     beyond the old k=10 window still enters consideration (the memory-search
+#     endpoint caps k at 100);
+#   * STATUS_EVENT_TERMS floats records that carry a concrete status event to
+#     the front of each query's candidate list so they are admitted into the
+#     reserved char-budget share before the summary swarm can consume it.
+PER_QUERY_K = 25
+STATUS_EVENT_TERMS = ("interview", "shortlist", "offer", "reject")
+
+
+def _is_status_event(normalized_content: str) -> bool:
+    return any(term in normalized_content for term in STATUS_EVENT_TERMS)
+
 
 class RoutineRecall:
-    def __init__(self, make_client: Callable, queries: dict[str, list[str]], *, max_chars: int = 12000):
+    def __init__(self, make_client: Callable, queries: dict[str, list[str]], *, max_chars: int = 12000,
+                 per_query_k: int = PER_QUERY_K):
         self._make_client = make_client
         self._queries = queries
         self._max_chars = max_chars
+        self._per_query_k = per_query_k
 
     async def __call__(self, user_id: str, slug: str) -> dict | None:
         queries = self._queries.get(f"{user_id}/{slug}", [])[:3]
@@ -22,8 +42,9 @@ class RoutineRecall:
             for query in queries:
                 units = []
                 try:
-                    result = await client.memory_search(user_id, query, slug=slug, as_of=as_of, mode="production", k=10)
-                    units = result.get("results", [])[:10]
+                    result = await client.memory_search(user_id, query, slug=slug, as_of=as_of,
+                                                        mode="production", k=self._per_query_k)
+                    units = result.get("results", [])[:self._per_query_k]
                 except Exception as exc:
                     evidence["errors"].append({"query": query, "error": f"{type(exc).__name__}: {exc}"})
                 batches.append(units)
@@ -47,6 +68,12 @@ class RoutineRecall:
                     record["content"] = content[:4000]
                     record["truncated"] = True
                 records.append((key, record))
+            # Stable sort: records carrying a status event (interview, offer,
+            # rejection, …) are admitted into this query's reserved share before
+            # the swarm of low-information dated summaries. Rank order is
+            # preserved within each group, so this only re-prioritises when a
+            # status event would otherwise be evicted by the swarm.
+            records.sort(key=lambda kr: 0 if _is_status_event(kr[0][0]) else 1)
             candidates.append(records)
 
         evidence["truncated"] = False
