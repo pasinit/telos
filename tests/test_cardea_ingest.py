@@ -251,6 +251,25 @@ def test_failed_live_run_sends_failed_notice_and_records_turn_failed(env):
     env["transcripts"].assert_not_called()
 
 
+def test_run_that_ended_early_after_delivering_a_recap_sends_no_failed_notice(env):
+    rid = env["routine"].id
+    env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
+    # Cardea marked the run deadline_exceeded, but the agent had already delivered the recap by mail.send.
+    env["cardea"].runs["task-1"] = run("failed", failure="deadline_exceeded",
+                                       calls=[call("listings.rightmove_search", op_id="op-01"),
+                                              call("mail.send", op_id="op-02")])
+
+    assert env["poller"].poll() == {"task-1": "live:failed"}
+
+    # No contradictory "No result was produced" FAILED email piled on top of the delivered recap.
+    env["email"].send_routine_notification.assert_not_called()
+    # The run is still recorded as a failed turn for operators, and the delivered recap is counted once.
+    kinds = [k for k, _ in events_of(env["history"])]
+    assert kinds[-2:] == ["email_delivery", "turn_failed"]
+    deliveries = ConversationLog(env["history"]).execution_events.recent_email_deliveries("sam@example.test")
+    assert [d["subject"] for d in deliveries] == ["Daily search"]
+
+
 def test_mail_outcome_unknown_is_a_failure(env):
     rid = env["routine"].id
     env["cardea"].trigger_list = [trigger(rid, [admitted("task-1")])]
