@@ -35,10 +35,10 @@ class FakeFetcher:
         return await self.fetch_html(url)
 
 
-def rightmove_page(n: int) -> str:
-    props = [{"id": 100 + i, "displayAddress": f"Flat {i}, Brixton", "price": {"displayPrices": [{"displayPrice": "£2,000 pcm"}]},
+def rightmove_page(n: int, start: int = 100, result_count: object = "42") -> str:
+    props = [{"id": start + i, "displayAddress": f"Flat {i}, Brixton", "price": {"displayPrices": [{"displayPrice": "£2,000 pcm"}]},
               "summary": "Bright flat", "bedrooms": 2, "propertyImages": {"mainImageSrc": "https://img/x.jpg"}} for i in range(n)]
-    blob = {"props": {"pageProps": {"searchResults": {"properties": props, "resultCount": "42"}}}}
+    blob = {"props": {"pageProps": {"searchResults": {"properties": props, "resultCount": result_count}}}}
     return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(blob)}</script></html>'
 
 
@@ -141,6 +141,33 @@ def test_fetch_heuristics_reject_bot_pages_and_accept_hydration_blobs() -> None:
     assert usable("<html><body>" + prose + "</body></html>")
     # A JS shell is accepted when the wire HTML carries the hydration data.
     assert usable('<html><div id="__next"></div>' + prose + rightmove_page(30) + "</html>")
+
+
+async def test_rightmove_follows_index_pagination_and_dedupes(make_context: MakeContext) -> None:
+    base = listings.rightmove_url("Brixton")
+    page2 = listings._rightmove_page_url(base, 24)
+    # A full first page (24 cards) implies another; the second page is short (5), so it is the last.
+    fetcher = FakeFetcher({base: rightmove_page(24, start=100), page2: rightmove_page(5, start=200)})
+    args = {"location": "Brixton", "max_pages": 2}
+    assert_input("listings.rightmove_search", args)
+    output = await listings.rightmove_search(args, make_context(), fetcher=fetcher)  # type: ignore[arg-type]
+    assert fetcher.urls == [base, page2]
+    assert output["status"] == "results" and len(output["listings"]) == 29
+    assert output["pages_visited"] == [base, page2] and output["pending_urls"] == []
+    assert output["stop_reason"] == "last_page"
+    assert_output("listings.rightmove_search", output)
+
+
+async def test_rightmove_reports_unread_pages_when_capped_at_max_pages(make_context: MakeContext) -> None:
+    base = listings.rightmove_url("Brixton")
+    page2 = listings._rightmove_page_url(base, 24)
+    fetcher = FakeFetcher({base: rightmove_page(24, start=100), page2: rightmove_page(24, start=200)})
+    output = await listings.rightmove_search({"location": "Brixton", "max_pages": 1}, make_context(), fetcher=fetcher)  # type: ignore[arg-type]
+    assert fetcher.urls == [base]  # page 2 is left for a later, wider run
+    assert len(output["listings"]) == 24 and output["pages_visited"] == [base]
+    assert output["pending_urls"] == [page2] and output["stop_reason"] == "max_pages"
+    assert output["truncated"] is True
+    assert_output("listings.rightmove_search", output)
 
 
 async def test_rightmove_tries_place_and_district_separately(make_context: MakeContext) -> None:

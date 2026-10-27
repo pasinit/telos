@@ -2,7 +2,7 @@
   "tool": {
     "name": "listings.rightmove_search",
     "title": "Rightmove search",
-    "description": "Search Rightmove for UK property listings by area and filters; returns structured search-card results from the first results page.",
+    "description": "Search Rightmove for UK property listings by area and filters; returns structured search-card results, following Rightmove's result-page pagination up to max_pages.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -34,6 +34,13 @@
           "type": "boolean",
           "default": true,
           "description": "True for sale (default), false for rent."
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 1,
+          "description": "Result pages to read (about 24 cards each), following Rightmove's &index= pagination."
         }
       },
       "required": [
