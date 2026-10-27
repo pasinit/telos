@@ -54,6 +54,18 @@ _NAV_TIMEOUT_MS = 30000
 _NETWORKIDLE_TIMEOUT_MS = 6000
 _TAIL_WAIT_MS = 1500
 
+# Wall-clock bounds on the persistent browser session. Patchright's default
+# launch timeout is 180000ms, and neither the launch nor the per-call page work
+# (goto / content / title / evaluate / image-download) was bounded end-to-end —
+# so a degraded backend let a single browser_* call hang for minutes and starve
+# the whole run (prod 2026-10-16/17). ``_BROWSER_LAUNCH_MS`` is patchright's own
+# launch timeout (milliseconds); the asyncio bounds guard the awaits themselves.
+# Mirrors the hardening already on the sibling fetch() path in
+# telos/transport/browser/fetcher.py.
+_BROWSER_LAUNCH_MS = 30_000
+_BROWSER_LAUNCH_S = 35.0
+_BROWSER_WORK_S = 75.0
+
 
 class BrowserSession:
     """One Chromium instance + page that survives across tool calls in a turn."""
@@ -76,22 +88,31 @@ class BrowserSession:
             return
 
         self._pw = await start_driver(async_playwright)
-        self._browser = await self._pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
-        )
-        self._context = await self._browser.new_context(
-            user_agent=_UA,
-            viewport={"width": 1280, "height": 800},
-            locale="en-GB",
-            timezone_id="Europe/London",
-            java_script_enabled=True,
-        )
-        self._page = await self._context.new_page()
-        self._page.on("crash", self._on_page_crash)
+
+        async def _boot() -> None:
+            # Pass patchright an explicit launch timeout (its default is
+            # 180000ms — the exact '180000ms exceeded' wedge seen in prod) and
+            # bound the whole startup (launch, context, first page) so a
+            # degraded backend can't hang the run before any navigation begins.
+            self._browser = await self._pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+                timeout=_BROWSER_LAUNCH_MS,
+            )
+            self._context = await self._browser.new_context(
+                user_agent=_UA,
+                viewport={"width": 1280, "height": 800},
+                locale="en-GB",
+                timezone_id="Europe/London",
+                java_script_enabled=True,
+            )
+            self._page = await self._context.new_page()
+            self._page.on("crash", self._on_page_crash)
+
+        await asyncio.wait_for(_boot(), timeout=_BROWSER_LAUNCH_S)
         log.info("browser session: started")
 
     def _on_page_crash(self, page: Any) -> None:
@@ -101,7 +122,7 @@ class BrowserSession:
         async with self._lock:
             try:
                 await self._ensure_started()
-                return await self._navigate(lambda: self._page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS))
+                return await self._bounded(self._navigate(lambda: self._page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)))
             except Exception as e:
                 self._crashed = True
                 log.warning("browser_open failed for %s: %s", url, e)
@@ -116,7 +137,7 @@ class BrowserSession:
                 locator = await self._resolve_clickable(target)
                 if locator is None:
                     return self._error(f"could not find clickable element matching {target!r}")
-                return await self._navigate(lambda: locator.click(timeout=10000))
+                return await self._bounded(self._navigate(lambda: locator.click(timeout=10000)))
             except Exception as e:
                 log.warning("browser_click failed for %r: %s", target, e)
                 return self._error(f"click failed: {e}")
@@ -135,7 +156,7 @@ class BrowserSession:
                     return self._error(f"fill failed: {e}")
                 await self._settle()
                 self._document = None
-                return await self._capture()
+                return await self._bounded(self._capture())
             except Exception as e:
                 log.warning("browser_fill failed for %r: %s", target, e)
                 return self._error(f"fill failed: {e}")
@@ -150,7 +171,7 @@ class BrowserSession:
                 if self._document is not None or (offset and self._snapshot is not None):
                     return self._content_page(offset)
                 await self._settle(short=True)
-                await self._capture()
+                await self._bounded(self._capture())
                 return self._content_page(offset)
             except Exception as e:
                 return self._error(f"read failed: {e}")
@@ -162,8 +183,8 @@ class BrowserSession:
             try:
                 if self._document is not None:
                     self._document = None
-                    return await self._capture()
-                return await self._navigate(self._go_back)
+                    return await self._bounded(self._capture())
+                return await self._bounded(self._navigate(self._go_back))
             except Exception as e:
                 return self._error(f"back failed: {e}")
 
@@ -186,6 +207,21 @@ class BrowserSession:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    async def _bounded(self, coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+        """Wall-clock bound one browser operation's page work.
+
+        goto/content/title/evaluate/image-download each carry their own
+        per-step timeouts, but nothing bounded a call end-to-end — so a
+        degraded backend could wedge a single browser_* call for minutes and
+        burn the whole run budget. A timed-out op leaves the session in an
+        unknown state, so mark it crashed and let the next call rebuild.
+        """
+        try:
+            return await asyncio.wait_for(coro, timeout=_BROWSER_WORK_S)
+        except TimeoutError:
+            self._crashed = True
+            raise TimeoutError(f"operation exceeded {_BROWSER_WORK_S:.0f}s wall-clock budget") from None
 
     async def _go_back(self) -> Response | None:
         if self._parents:
