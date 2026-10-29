@@ -398,3 +398,19 @@ def test_service_does_not_subscribe_to_event_bus(scheduler):
     # only the trigger seam.
     assert hasattr(svc, "trigger")
     assert not hasattr(svc, "_event_bus")
+
+
+def test_memory_steward_is_never_polled_for_improvement() -> None:
+    from telos.services.improvement import NO_IMPROVEMENT_SLUGS
+    from telos.services.memory_reconcile import AGENT_SLUG
+
+    seen: list[tuple[str, str]] = []
+    svc = ImprovementService(
+        BackgroundScheduler(),
+        list_pairs_fn=lambda: [("alice", "weather"), ("alice", AGENT_SLUG)],
+        get_agent_state_fn=lambda u, s: seen.append((u, s)),
+        recordatio_url="http://recordatio.test",
+    )
+    svc._trigger.poll_once()  # noqa: SLF001
+    assert AGENT_SLUG in NO_IMPROVEMENT_SLUGS
+    assert seen == [("alice", "weather")]
