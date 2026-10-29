@@ -51,6 +51,11 @@ DEFAULT_OPERATIONS: dict[str, str | None] = {
     "browser_open": "browser.open",
     "browser_click": "browser.click",
     "memory_recall": "memory.recall",
+    # The nightly memory-reconcile routine (telos/services/memory_reconcile.py). Only the
+    # memory-steward agent has these tools, so other routines never name the operations.
+    "memory_reconcile_candidates": "memory.reconcile_candidates",
+    "memory_reconcile_apply": "memory.reconcile_apply",
+    "memory_reconcile_finish": "memory.reconcile_finish",
 }
 # Mapped only with ``TELOS_CARDEA_LEDGER=1``: Cardea refuses triggers naming operations it
 # has not installed, so these stay out until the ledger operations are deployed.
@@ -74,10 +79,17 @@ KERNEL_RIGHTS = (
     "tasks.submit",
     "models.invoke",
 )
-PREVIEW = {"mail.send": "mail.preview", "ledger.record": "ledger.record_preview"}
+PREVIEW = {
+    "mail.send": "mail.preview",
+    "ledger.record": "ledger.record_preview",
+    "memory.reconcile_apply": "memory.reconcile_apply_preview",
+    "memory.reconcile_finish": "memory.reconcile_finish_preview",
+}
 PREVIEW_NOTES = {
     "mail.preview": "shadow run: the email is recorded for review, not sent",
     "ledger.record_preview": "shadow run: the assessment is validated, not recorded",
+    "memory.reconcile_apply_preview": "shadow run: the verdict is checked, nothing is deleted",
+    "memory.reconcile_finish_preview": "shadow run: reports what finishing would do, changes nothing",
 }
 MODES = ("off", "shadow", "live")
 # Slots missed by up to this long (a Cardea restart, a deploy) still run once, late.
