@@ -47,6 +47,10 @@ class Config:
     brevo_api_url: str = "https://api.brevo.com/v3"
     recordatio_url: str = "http://localhost:8787"
     recordatio_api_key: str = ""
+    # Key Recordatio lets call only its memory-reconcile routes (memory.reconcile_*).
+    recordatio_reconcile_key: str = ""
+    # Pairs per memory.reconcile_candidates batch (the agent's limit is capped at this).
+    reconcile_batch_size: int = 10
     # "<namespace>/<agent_id>" (or a bare namespace) -> the Recordatio user/agent whose memory it may read.
     recordatio_scopes: dict[str, RecordatioScope] = field(default_factory=dict)
     # Telos's internal API (ledger, routine context) and the JWT-SVID file authenticating to it.
@@ -93,6 +97,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     search = data.get("search", {})
     fetch = data.get("fetch", {})
     telos = data.get("telos", {})
+    reconcile = data.get("reconcile", {})
 
     def pick(name: str, section: dict[str, Any], key: str, default: Any = "") -> Any:
         return env.get(name) or section.get(key, default)
@@ -110,6 +115,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         brevo_api_url=pick("BREVO_API_URL", brevo, "api_url", "https://api.brevo.com/v3"),
         recordatio_url=pick("RECORDATIO_URL", recordatio, "url", "http://localhost:8787"),
         recordatio_api_key=pick("CHAT_API_KEY", recordatio, "api_key"),
+        recordatio_reconcile_key=pick("RECORDATIO_RECONCILE_KEY", recordatio, "reconcile_key"),
+        reconcile_batch_size=max(1, int(pick("TELOS_CARDEA_RECONCILE_BATCH", reconcile, "batch_size", 10))),
         recordatio_scopes=scopes,
         telos_url=pick("TELOS_INTERNAL_URL", telos, "url"),
         telos_token_file=pick("TELOS_INTERNAL_TOKEN_FILE", telos, "token_file"),

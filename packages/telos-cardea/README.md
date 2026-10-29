@@ -22,6 +22,11 @@ Cardea installs it into its service environment on its own host.
 | `browser.click` | `browser_click` | read | none | none | **confined worker** (`descriptors/confined/`) |
 | `memory.recall` | `memory_recall` | read | none | none | in-process |
 | `memory.briefing` | (agent-hook briefing) | read | none | none | in-process |
+| `memory.reconcile_candidates` | `memory_reconcile_candidates` | read | none | none | in-process |
+| `memory.reconcile_apply` | `memory_reconcile_apply` | effect | `["/pair_token"]` (one verdict per memory pair per idempotency context) | `memory.reconcile_apply.reconcile` | in-process |
+| `memory.reconcile_apply_preview` | (shadow mode) | read | none | none | in-process |
+| `memory.reconcile_finish` | `memory_reconcile_finish` | effect | `[]` (once per idempotency context) | `memory.reconcile_finish.reconcile` | in-process |
+| `memory.reconcile_finish_preview` | (shadow mode) | read | none | none | in-process |
 | `telos.routine_context` | (routine-run context) | read | none | none | in-process |
 | `ledger.list` | `list_property_candidates` | read | none | none | in-process |
 | `ledger.history` | `list_property_candidates` with `url` | read | none | none | in-process |
@@ -202,7 +207,9 @@ win. The file must be mode `0600`, or the call fails. Environment names match Te
 | Brevo API key (transactional events) | `BREVO_API_KEY` | `brevo.api_key` | `mail.send.reconcile` |
 | Recordatio base URL | `RECORDATIO_URL` | `recordatio.url` | `memory.recall`, `memory.briefing` |
 | Recordatio bearer key (a recall key) | `CHAT_API_KEY` | `recordatio.api_key` | `memory.recall`, `memory.briefing` |
-| Cardea (namespace, agent) → Recordatio user/agent | none | `recordatio.scopes."<namespace>/<agent_id>"` (fallback: `"<namespace>"`) | `memory.recall`, `memory.briefing` |
+| Recordatio reconcile key (falls back to the bearer key) | `RECORDATIO_RECONCILE_KEY` | `recordatio.reconcile_key` | `memory.reconcile_*` |
+| Pairs per reconcile batch (default 10; the agent's `limit` is capped at it) | `TELOS_CARDEA_RECONCILE_BATCH` | `reconcile.batch_size` | `memory.reconcile_candidates` |
+| Cardea (namespace, agent) → Recordatio user/agent | none | `recordatio.scopes."<namespace>/<agent_id>"` (fallback: `"<namespace>"`) | `memory.recall`, `memory.briefing`, `memory.reconcile_*` |
 | Telos internal API base URL | `TELOS_INTERNAL_URL` | `telos.url` | `telos.routine_context`, `ledger.*` |
 | JWT-SVID file for Telos (audience `telos-internal`) | `TELOS_INTERNAL_TOKEN_FILE` | `telos.token_file` | `telos.routine_context`, `ledger.*` |
 | Search engine: `serper`, `serpapi`, `duckduckgo` (default), `bing` | `SEARCH_ENGINE` | `search.engine` | `web.search` |
@@ -302,6 +309,55 @@ exactly as it would live, so shadow runs see the same errors.
 **`memory.briefing`.** `GET {recordatio.url}/v1/users/{user_id}/briefing?slug=…&query=…` with the recall key. It
 returns `{"briefing", "units"}`, the text the agent hook would inject, and Recordatio writes nothing. Like
 `memory.recall`, the user and slug come from `recordatio.scopes`, never from arguments.
+
+**`memory.reconcile_*`.** These operations run the nightly memory reconcile. The agent is the judge;
+Recordatio proposes pairs of memories and verifies each verdict. Telos seeds one `memory-steward` agent and
+one routine per user (`scripts/seed_memory_reconcile.py`). Its loop:
+1. `memory.reconcile_candidates` returns a batch of pairs, each with a `pair_token`.
+2. `memory.reconcile_apply` is called once per pair.
+3. When no pairs are left, `memory.reconcile_finish` closes the run.
+
+The calls go to `{recordatio.url}/v1/users/{user}/memory-reconcile/…` with the reconcile key. The user comes from
+`recordatio.scopes`, never from arguments. The run id is derived from the namespace, the agent and the
+idempotency context (the trigger slot), so one night's calls share a run and its budget.
+- **`memory.reconcile_apply`.** Recordatio deletes the dropped memory only when the verdict's quotes and its own
+  checks pass. It records the outcome under the pair token and replays it on a repeat. A token whose memories
+  changed returns `outcome: "stale"` and has no effect. `Idempotency-Key` carries Cardea's `effect_key`.
+- **`memory.reconcile_apply.reconcile`.** Reads `GET …/verdicts/{pair_token}`. A 200 means **applied**.
+  A 404 with code `verdict_not_found` means **not applied**. Any other answer raises.
+- **`memory.reconcile_finish`.** Returns the run summary; a repeat returns the same summary.
+  **`memory.reconcile_finish.reconcile`** reads `GET …/runs/{run_id}`: **applied** once the run has a finish
+  summary.
+- **Refusals.** 401, 403, 409 (run already finished) and 422 (malformed verdict or token) are
+  `OperationRejected`.
+- **Previews.** In shadow mode, the `_preview` variants send the same requests with `dry_run`, so nothing is
+  deleted.
+
+### Reaching Recordatio from the Cardea host
+
+`memory.recall` already reaches Recordatio through its private-network listener (`RECORDATIO_VPC_LISTEN` in
+Telos's `docker-compose.yml`). Recordatio's network guard lets callers from `RECORDATIO_RESTRICTED_NETWORKS`
+through only with a key. The reconcile operations use the same path with their own key, which Recordatio lets
+call only the `memory-reconcile` routes:
+
+1. Generate a key: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+2. Add its SHA-256 to Recordatio's `.env` as `RECORDATIO_RECONCILE_KEY_SHA256='["<hex>"]'`. Get the digest with
+   `printf %s "$KEY" | sha256sum`. Then restart Recordatio.
+3. On the Cardea host, put the key in `/etc/telos-cardea/config.toml`. Map each user's memory-steward agent to its
+   Recordatio user:
+
+   ```toml
+   [recordatio]
+   reconcile_key = "…"
+
+   [recordatio.scopes."telos-<user>/telos-memory-steward"]
+   user_id = "<user>"
+   slug = "_user"
+   ```
+
+4. Install the five `memory.reconcile_*` descriptors into Cardea's `operations_dir`, then restart Cardea.
+
+No Caddy route is needed.
 
 **Reads.** When coverage is missing, the listing and search operations return `status: "unavailable"` with a
 reason instead of failing, so the agent never reads the gap as zero inventory.
