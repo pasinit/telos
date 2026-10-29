@@ -31,11 +31,19 @@ class _StubClient:
     """Stand-in for RecordatioFeedbackClient. Records feedback posts; returns
     canned reads."""
 
-    def __init__(self, *, search_results: list | None = None, feedback: dict | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        search_results: list | None = None,
+        feedback: dict | None = None,
+        reconcile: dict | Exception | None = None,
+    ) -> None:
         self.posted: list[dict] = []
+        self.events: list[str] = []
         self.closed = False
         self._search = search_results or []
         self._feedback = feedback or {}
+        self._reconcile = reconcile if reconcile is not None else {"totals": {}}
 
     async def aclose(self) -> None:
         self.closed = True
@@ -53,8 +61,15 @@ class _StubClient:
         return {"request_id": request_id, "units": []}
 
     async def post_memory_feedback(self, user_id, *, day, summary, findings, ops):
+        self.events.append("post")
         self.posted.append({"user_id": user_id, "day": day, "summary": summary, "findings": findings, "ops": ops})
         return {"id": len(self.posted)}
+
+    async def reconcile_memory(self, *, dry_run=False, timeout=1800.0):
+        self.events.append("reconcile")
+        if isinstance(self._reconcile, Exception):
+            raise self._reconcile
+        return self._reconcile
 
 
 class _ScriptedAnalyst:
@@ -296,3 +311,39 @@ async def test_service_no_active_agents_is_clean(tmp_path: Path) -> None:
     assert analyst.calls == []
     assert client.posted == []
     assert len(emails) == 1  # still sends a (empty) digest
+
+
+async def test_service_reconciles_memory_after_reduce_and_reports_it(tmp_path: Path) -> None:
+    """The nightly run triggers Recordatio's reconcile after the reduce POSTs
+    (so tonight's ops are re-checked too) and summarises it in the digest."""
+    at = datetime(2026, 7, 31, 9, 0)
+    _make_agent(tmp_path, "dana", "jobber", n_turns=1, at=at)
+    client = _StubClient(reconcile={"totals": {
+        "deleted": 3, "by_relation": {"duplicate_subsumed": 2, "supersedes": 1},
+        "ops_apply": 2, "ops_dismiss": 5, "ops_pending": 1, "judge_calls": 12, "judge_cost_usd": 0.04,
+    }})
+    analyst = _ScriptedAnalyst(agent_payload=_AGENT_PAYLOAD, memory_payload=_MEMORY_PAYLOAD)
+    emails: list = []
+    svc = _service(tmp_path, analyst, client, emails)
+
+    await svc.run_for_day(DAY)
+
+    assert client.events == ["post", "reconcile"]
+    _, _, body = emails[0]
+    assert "Memory reconcile" in body
+    assert "Deleted <strong>3</strong> superseded memories (2 duplicate subsumed, 1 supersedes)" in body
+    assert "2 applied, 5 dismissed, 1 left pending" in body
+
+
+async def test_reconcile_failure_never_blocks_the_night(tmp_path: Path) -> None:
+    at = datetime(2026, 7, 31, 9, 0)
+    _make_agent(tmp_path, "dana", "jobber", n_turns=1, at=at)
+    client = _StubClient(reconcile=RuntimeError("recordatio down"))
+    analyst = _ScriptedAnalyst(agent_payload=_AGENT_PAYLOAD, memory_payload=_MEMORY_PAYLOAD)
+    emails: list = []
+    svc = _service(tmp_path, analyst, client, emails)
+
+    run = await svc.run_for_day(DAY)
+
+    assert run.status == "completed"
+    assert len(emails) == 1 and "Memory reconcile" not in emails[0][2]

@@ -5,9 +5,11 @@ For one day:
   2. MAP — one analyst session per active agent → per-agent feedback,
      persisted report-only; recall-misses collected per user.
   3. REDUCE — one analyst session per user over the day's units + that
-     user's collected observations → memory feedback, POSTed to Recordatio for
-     dashboard apply/dismiss.
-  4. Record the run + cost, then email the owner a summary with a
+     user's collected observations → memory feedback, POSTed to Recordatio.
+  4. RECONCILE — ask Recordatio to reconcile memory (best-effort): it deletes
+     superseded memories and re-checks every pending memory-feedback op,
+     applying or dismissing it, so the analyst's queue drains each night.
+  5. Record the run + cost, then email the owner a summary with a
      dashboard link.
 
 Every session is independently guarded: one wedged or erroring agent is
@@ -63,17 +65,30 @@ class NightlyConfig:
 class MemoryBacklog:
     """Snapshot of the pending memory-hygiene op queue across the day's users.
 
-    The analyst proposes reversible ops (tombstone/merge/correct) every night,
-    but they only apply when someone clicks them on the dashboard — a page that
-    in practice is never visited, so the queue silently grows and contradicted
-    memory stays live. Surfacing this in the digest turns a pull-only backlog
-    into a pushed, actionable line.
+    The analyst proposes ops (tombstone/merge/correct) every night; Recordatio's
+    nightly reconcile re-checks and applies or dismisses them. What is left
+    pending after it ran are ops it could not decide yet (judge unavailable or
+    per-run budget spent) — this line makes that remainder visible.
     """
 
     pending: int
     users_with_pending: int
     oldest_age_days: int | None
     by_type: dict[str, int]
+
+
+@dataclass(frozen=True)
+class MemoryReconcile:
+    """Summary of Recordatio's nightly memory reconcile (all users)."""
+
+    deleted: int
+    by_relation: dict[str, int]
+    ops_applied: int
+    ops_dismissed: int
+    ops_pending: int
+    judge_calls: int
+    judge_errors: int
+    cost_usd: float
 
 
 class NightlyFeedbackService:
@@ -105,6 +120,7 @@ class NightlyFeedbackService:
         total_cost = 0.0
         memory_summaries: list[str] = []
         backlog: MemoryBacklog | None = None
+        reconcile: MemoryReconcile | None = None
         client = self._make_client()
         try:
             agents = active_agents(self._cfg.storage_root, day)
@@ -123,16 +139,19 @@ class NightlyFeedbackService:
                 if summary:
                     memory_summaries.append(f"{user_id}: {summary}")
             memory_summary = "\n".join(memory_summaries) or None
+            # After the reduce POSTs, so tonight's new ops are re-checked too;
+            # before the backlog snapshot, so the digest shows what is left.
+            reconcile = await self._reconcile_memory(client)
             self._store.finish_run(run_id, status="completed", memory_summary=memory_summary, cost_usd=total_cost)
             backlog = await self._memory_backlog(day, sorted({a.user_id for a in agents}), client)
         except Exception as exc:
             log.exception("nightly %s failed", day_str)
             self._store.finish_run(run_id, status="failed", error=f"{exc.__class__.__name__}: {exc}", cost_usd=total_cost)
             await client.aclose()
-            self._send_digest(run_id, backlog)
+            self._send_digest(run_id, backlog, reconcile)
             raise
         await client.aclose()
-        self._send_digest(run_id, backlog)
+        self._send_digest(run_id, backlog, reconcile)
         run = self._store.get_run(run_id)
         assert run is not None
         return run
@@ -220,6 +239,26 @@ class NightlyFeedbackService:
             log.exception("nightly memory reduce for %s failed", user_id)
             return 0.0, None
 
+    async def _reconcile_memory(self, client: RecordatioFeedbackClient) -> MemoryReconcile | None:
+        """Trigger Recordatio's memory reconcile; ``None`` if it failed or is
+        unavailable, so a memory-side problem never blocks the digest."""
+        try:
+            data = await client.reconcile_memory()
+            totals = data.get("totals", {})
+            return MemoryReconcile(
+                deleted=int(totals.get("deleted", 0)),
+                by_relation={str(k): int(v) for k, v in (totals.get("by_relation") or {}).items()},
+                ops_applied=int(totals.get("ops_apply", 0)),
+                ops_dismissed=int(totals.get("ops_dismiss", 0)),
+                ops_pending=int(totals.get("ops_pending", 0)),
+                judge_calls=int(totals.get("judge_calls", 0)),
+                judge_errors=int(totals.get("judge_errors", 0)),
+                cost_usd=float(totals.get("judge_cost_usd", 0.0)),
+            )
+        except Exception:
+            log.exception("nightly memory reconcile failed")
+            return None
+
     async def _memory_backlog(
         self, day: date, user_ids: list[str], client: RecordatioFeedbackClient
     ) -> MemoryBacklog | None:
@@ -259,7 +298,9 @@ class NightlyFeedbackService:
             log.exception("nightly memory backlog snapshot failed")
             return None
 
-    def _send_digest(self, run_id: int, backlog: MemoryBacklog | None = None) -> None:
+    def _send_digest(
+        self, run_id: int, backlog: MemoryBacklog | None = None, reconcile: MemoryReconcile | None = None
+    ) -> None:
         """Email the owner a summary of the run (best-effort)."""
         if self._email_sink is None or not self._cfg.owner_email:
             return
@@ -269,11 +310,17 @@ class NightlyFeedbackService:
         rows = self._store.list_agent_feedback(run_id)
         try:
             subject = f"Nightly feedback — {run.day} ({run.status})"
-            self._email_sink(self._cfg.owner_email, subject, self._render_digest(run, rows, backlog))
+            self._email_sink(self._cfg.owner_email, subject, self._render_digest(run, rows, backlog, reconcile))
         except Exception:
             log.exception("nightly digest email failed")
 
-    def _render_digest(self, run: NightlyRunRow, rows: list, backlog: MemoryBacklog | None = None) -> str:
+    def _render_digest(
+        self,
+        run: NightlyRunRow,
+        rows: list,
+        backlog: MemoryBacklog | None = None,
+        reconcile: MemoryReconcile | None = None,
+    ) -> str:
         """Scannable digest: per-agent scores + truncated blurbs, not full prose.
 
         The complete per-agent feedback and memory findings live in the app
@@ -302,6 +349,15 @@ class NightlyFeedbackService:
         if run.memory_summary:
             excerpt = _truncate(run.memory_summary, 400)
             lines.append(f"<h3>Memory</h3><p>{excerpt}</p>")
+        if reconcile is not None:
+            kinds = ", ".join(f"{n} {r.replace('_', ' ')}" for r, n in sorted(reconcile.by_relation.items()))
+            errors = f", {reconcile.judge_errors} failed" if reconcile.judge_errors else ""
+            lines.append(
+                f"<h3>Memory reconcile</h3><p>Deleted <strong>{reconcile.deleted}</strong> superseded "
+                f"memor{'y' if reconcile.deleted == 1 else 'ies'}{f' ({kinds})' if kinds else ''} · ops: "
+                f"{reconcile.ops_applied} applied, {reconcile.ops_dismissed} dismissed, {reconcile.ops_pending} "
+                f"left pending · {reconcile.judge_calls} judge call(s){errors}, ${reconcile.cost_usd:.2f}.</p>"
+            )
         if backlog is not None:
             if backlog.pending:
                 breakdown = ", ".join(f"{n} {t}" for t, n in sorted(backlog.by_type.items()))
@@ -312,16 +368,17 @@ class NightlyFeedbackService:
                 lines.append(
                     f"<h3>Memory-hygiene queue</h3><p><strong>{backlog.pending}</strong> op(s) pending "
                     f"across {backlog.users_with_pending} user(s){age} ({breakdown}). "
-                    f"Apply the safe ones from the dashboard below.</p>"
+                    f"The nightly reconcile re-checks them automatically; these are the ones it "
+                    f"could not decide yet.</p>"
                 )
             else:
                 lines.append("<h3>Memory-hygiene queue</h3><p>No pending ops — queue clear.</p>")
         lines.append(
             f"<hr><p><a href=\"{self._cfg.dashboard_url}\">Open the memory dashboard</a> "
-            f"to review the full findings and approve or dismiss the proposed clean-up. "
+            f"to review the full findings and the reconcile outcome of each proposed clean-up. "
             f"Per-agent feedback is in the app under each agent's Nightly feedback.</p>"
         )
         return "\n".join(lines)
 
 
-__all__ = ["NightlyFeedbackService", "NightlyConfig"]
+__all__ = ["NightlyFeedbackService", "NightlyConfig", "MemoryReconcile"]

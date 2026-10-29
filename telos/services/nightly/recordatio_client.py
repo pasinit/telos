@@ -94,5 +94,18 @@ class RecordatioFeedbackClient:
         r.raise_for_status()
         return r.json()
 
+    async def reconcile_memory(self, *, dry_run: bool = False, timeout: float = 1800.0) -> dict[str, Any]:
+        """Run Recordatio's memory reconcile for every user and return its summary.
+
+        Deletes superseded memories and re-checks the pending memory-feedback
+        ops (applied / dismissed). Bounded per user on the Recordatio side, but
+        each judge call is an LLM round trip, hence the long timeout.
+        """
+        r = await self._http.post(
+            "/v1/memory-reconcile", params={"dry_run": "true"} if dry_run else None, timeout=timeout
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 __all__ = ["RecordatioFeedbackClient"]
