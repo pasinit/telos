@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     # ``CLAUDE_CODE_OAUTH_TOKEN`` (read from the env by the bundled CLI, not a
     # field here). ``owner_email`` gets the nightly digest; empty ⇒ no digest.
     routine_recall_queries: dict[str, list[str]] = {}
+    # Optional cost ceiling on how many of a routine's configured reference
+    # queries run per execution. ``None`` (default) runs the whole configured
+    # list so a routine can cover application-status AND profile/competency
+    # evidence in one run; set an int only to cap cost.
+    routine_recall_max_queries: int | None = None
+    # Per-routine (keyed ``user_id/slug``) status-event terms that float
+    # matching records to the front of each query's candidate list. Empty ⇒ the
+    # global job-status defaults (``STATUS_EVENT_TERMS``). Lets a non-job
+    # routine float its own evidence terms (e.g. competency phrases).
+    routine_recall_status_terms: dict[str, list[str]] = {}
     nightly_feedback_enabled: bool = False
     nightly_feedback_hour: int = 3  # local-time hour for the 03:30 cron
     nightly_feedback_minute: int = 30
