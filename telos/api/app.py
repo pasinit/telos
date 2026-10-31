@@ -363,6 +363,8 @@ def _agent_display_name(user_id: str, slug: str) -> str:
 _routine_recall = RoutineRecall(
     lambda: RecordatioFeedbackClient(settings.recordatio_url, settings.chat_api_key or "nightly"),
     settings.routine_recall_queries,
+    max_queries=settings.routine_recall_max_queries,
+    status_terms=settings.routine_recall_status_terms,
 )
 _routine_executor = RoutineExecutor(
     agent_runtime=_agent_runtime,

@@ -79,6 +79,49 @@ async def test_priority_recall_surfaces_status_event_beyond_old_k_window_under_s
     assert "interview" in ids
 
 
+async def test_priority_recall_runs_all_configured_queries_beyond_three():
+    # A routine's reference queries are operator config. The old hard-coded
+    # [:3] cap silently dropped every query beyond the third, so profile/
+    # competency probes (configured as later queries) never ran and that
+    # evidence never reached the briefing. All configured queries must run.
+    queries = ["applications", "updates", "status", "parliamentary advocacy engagement",
+               "supervising staff implementing partners budget leadership"]
+    results = [{"results": [{"id": f"q{i}", "content": f"evidence for {q}", "asserted_at": "2026-10-01"}]}
+               for i, q in enumerate(queries)]
+    client = Client(results)
+    result = await RoutineRecall(lambda: client, {"owner/jobber": queries})("owner", "jobber")
+    assert client.memory_search.call_count == len(queries)
+    assert result["queries"] == queries
+    assert {record["id"] for record in result["records"]} == {f"q{i}" for i in range(len(queries))}
+
+
+async def test_priority_recall_respects_optional_max_queries_cost_ceiling():
+    queries = ["a", "b", "c", "d", "e"]
+    client = Client([{"results": [{"id": q, "content": q}]} for q in queries])
+    result = await RoutineRecall(lambda: client, {"owner/jobber": queries}, max_queries=2)("owner", "jobber")
+    assert client.memory_search.call_count == 2
+    assert result["queries"] == ["a", "b"]
+
+
+async def test_priority_recall_floats_configured_status_terms_per_routine():
+    # Per-routine status terms re-prioritise this routine's own evidence to the
+    # front of the candidate list instead of only the global job-status terms.
+    noise = {"id": "noise", "content": "weekly status note no change", "asserted_at": "2026-06-01"}
+    competency = {"id": "comp", "content": "Supervising staff and implementing partners with budget leadership",
+                  "asserted_at": "2026-06-20"}
+
+    def run(**kwargs):
+        client = Client([{"results": [noise, competency]}])
+        return RoutineRecall(lambda: client, {"owner/jobber": ["competency evidence"]}, **kwargs)("owner", "jobber")
+
+    # Default terms: neither record is a job-status event, rank order preserved.
+    default = await run()
+    assert [record["id"] for record in default["records"]] == ["noise", "comp"]
+    # Configured competency term floats the matching record to the front.
+    configured = await run(status_terms={"owner/jobber": ["Supervising staff"]})
+    assert [record["id"] for record in configured["records"]] == ["comp", "noise"]
+
+
 async def test_priority_recall_keeps_dated_observations_and_conflicts():
     old = {"id": "old", "content": "Application pending", "asserted_at": "2026-09-01"}
     new = {**old, "id": "new", "asserted_at": "2026-09-11"}

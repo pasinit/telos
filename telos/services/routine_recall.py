@@ -18,22 +18,38 @@ PER_QUERY_K = 25
 STATUS_EVENT_TERMS = ("interview", "shortlist", "offer", "reject")
 
 
-def _is_status_event(normalized_content: str) -> bool:
-    return any(term in normalized_content for term in STATUS_EVENT_TERMS)
+def _is_status_event(normalized_content: str, terms: tuple[str, ...] = STATUS_EVENT_TERMS) -> bool:
+    return any(term in normalized_content for term in terms)
 
 
 class RoutineRecall:
     def __init__(self, make_client: Callable, queries: dict[str, list[str]], *, max_chars: int = 12000,
-                 per_query_k: int = PER_QUERY_K):
+                 per_query_k: int = PER_QUERY_K, max_queries: int | None = None,
+                 status_terms: dict[str, list[str]] | None = None):
         self._make_client = make_client
         self._queries = queries
         self._max_chars = max_chars
         self._per_query_k = per_query_k
+        # A routine's reference queries are entirely operator-configured, so the
+        # whole configured list runs by default. ``max_queries`` is an optional
+        # cost ceiling, not a silent truncation: a routine can probe
+        # application-status AND profile/competency evidence in one run.
+        self._max_queries = max_queries
+        # Which records float to the front of a query's candidate list (see the
+        # sort below). Per-routine (keyed ``user_id/slug``) so a routine can
+        # float its own evidence terms instead of only the global job-status
+        # defaults; falls back to ``STATUS_EVENT_TERMS`` when unset.
+        self._status_terms = status_terms or {}
 
     async def __call__(self, user_id: str, slug: str) -> dict | None:
-        queries = self._queries.get(f"{user_id}/{slug}", [])[:3]
+        key = f"{user_id}/{slug}"
+        queries = self._queries.get(key, [])
+        if self._max_queries is not None:
+            queries = queries[:self._max_queries]
         if not queries:
             return None
+        configured_terms = self._status_terms.get(key)
+        status_terms = tuple(term.casefold() for term in configured_terms) if configured_terms else STATUS_EVENT_TERMS
         as_of = datetime.now(UTC).isoformat()
         evidence = {"as_of": as_of, "queries": queries, "records": [], "errors": [], "truncated": False}
         batches = []
@@ -73,7 +89,7 @@ class RoutineRecall:
             # the swarm of low-information dated summaries. Rank order is
             # preserved within each group, so this only re-prioritises when a
             # status event would otherwise be evicted by the swarm.
-            records.sort(key=lambda kr: 0 if _is_status_event(kr[0][0]) else 1)
+            records.sort(key=lambda kr: 0 if _is_status_event(kr[0][0], status_terms) else 1)
             candidates.append(records)
 
         evidence["truncated"] = False
