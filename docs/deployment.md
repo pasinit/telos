@@ -63,6 +63,7 @@ Set in `.env`:
 |---|---|
 | `PUBLIC_HOST` | Hostname Caddy obtains a certificate for; also marks auth cookies `Secure` |
 | `RECORDATIO_PASSWORD_HASH` | bcrypt hash for the `/recordatio/*` and Aspire basic auth (user `recordatio`). Generate with `make recordatio-hash PASS=...` |
+| `FAMILY_PASSWORD_HASH` | Optional. bcrypt hash for the `/family/*` basic auth (user `family`), which proxies to a separately run `family` container on the `telos_default` network. Same `make recordatio-hash` generator |
 
 Recordatio has no authentication of its own, so keep it behind this gate.
 

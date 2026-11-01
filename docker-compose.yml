@@ -212,6 +212,7 @@ services:
     environment:
       PUBLIC_HOST: ${PUBLIC_HOST}
       RECORDATIO_PASSWORD_HASH: ${RECORDATIO_PASSWORD_HASH:-}
+      FAMILY_PASSWORD_HASH: ${FAMILY_PASSWORD_HASH:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
