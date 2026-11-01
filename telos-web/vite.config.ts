@@ -37,6 +37,8 @@ export default defineConfig({
           // installed service worker rewrites /recordatio/* navigations to
           // index.html, so on mobile the links just showed the Telos chat.
           /^\/recordatio(?:\/|$)/,
+          // Private /family/* site, reverse-proxied by Caddy to a separate container.
+          /^\/family(?:\/|$)/,
           /^\/oauth\//,
           /^\/docs/,
           /^\/openapi\.json/,
