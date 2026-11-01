@@ -28,6 +28,19 @@
 		reverse_proxy aspire:18888
 	}
 
+	# Optional private site, served by a separate `family` container attached
+	# to the telos_default network (not part of this compose project). Gated
+	# by basic auth with user "family" and FAMILY_PASSWORD_HASH (bcrypt). When
+	# the hash is missing nobody can authenticate; when the container is not
+	# running the route returns 502.
+	redir /family /family/ 308
+	handle_path /family/* {
+		basic_auth {
+			family {$FAMILY_PASSWORD_HASH}
+		}
+		reverse_proxy family:8080
+	}
+
 	handle {
 		reverse_proxy telos:7433
 	}
