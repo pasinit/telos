@@ -1,9 +1,11 @@
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from ddgs.exceptions import RatelimitException, TimeoutException
 
 from telos.domain.tools.zoopla import ZooplaSearchInput, ZooplaSearchTool
 from telos.transport.search import base, duckduckgo, gemini
@@ -29,6 +31,50 @@ async def test_ddg_runs_off_loop_and_genuine_empty_remains_success(monkeypatch):
     monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(search))
     text, error = await DuckDuckGoSearch().search('property')
     assert not error and 'No usable results' in text
+
+
+async def test_ddg_retries_transient_error_once_before_brief_bench(monkeypatch):
+    # A single slow/flaky response must not remove a backend for a full minute.
+    calls = []
+    def flaky(query, backend):
+        calls.append(backend)
+        raise TimeoutException('slow')
+    monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(flaky))
+    search = DuckDuckGoSearch(backends=('bing',))
+    text, error = await search.search('property')
+    assert error and 'unavailable' in text
+    assert calls == ['bing', 'bing']  # retried once before benching
+    cooldown = search._cooldowns['bing'] - time.monotonic()
+    assert 0 < cooldown <= duckduckgo._TRANSIENT_COOLDOWN * 2  # brief, not the 60s bench
+
+
+async def test_ddg_rate_limit_benches_for_a_full_minute_without_retry(monkeypatch):
+    calls = []
+    def ratelimited(query, backend):
+        calls.append(backend)
+        raise RatelimitException('429 Too Many Requests')
+    monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(ratelimited))
+    search = DuckDuckGoSearch(backends=('bing',))
+    text, error = await search.search('property')
+    assert error
+    assert calls == ['bing']  # an explicit rate-limit is not retried
+    cooldown = search._cooldowns['bing'] - time.monotonic()
+    assert duckduckgo._RATELIMIT_COOLDOWN - 2 < cooldown <= duckduckgo._RATELIMIT_COOLDOWN
+
+
+async def test_ddg_retry_recovers_a_transient_failure(monkeypatch):
+    outcomes = iter([TimeoutException('slow'),
+                     [{'title': 'A', 'href': 'https://example.com/a', 'body': 'b'}]])
+    def flaky(query, backend):
+        result = next(outcomes)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(flaky))
+    search = DuckDuckGoSearch(backends=('bing',))
+    text, error = await search.search('example')
+    assert not error and 'example.com/a' in text
+    assert 'bing' not in search._cooldowns  # recovered on retry, never benched
 
 
 async def test_ddg_network_timeout_is_explicit(monkeypatch):

@@ -92,10 +92,12 @@ async def test_search_tries_independent_backend_after_failure(monkeypatch):
     monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
     engine = DuckDuckGoSearch()
     text, error = await engine.search('policy')
-    assert not error and 'Software Engineer' in text and calls == ['bing', 'brave']
+    # A transient failure is retried once before benching, so bing is tried
+    # twice before the search falls through to the independent brave backend.
+    assert not error and 'Software Engineer' in text and calls == ['bing', 'bing', 'brave']
     calls.clear()
     await engine.search('another query')
-    assert calls == ['brave']
+    assert calls == ['brave']  # bing is still in its (brief) transient cooldown
 
 
 async def test_only_off_domain_results_are_not_empty_inventory(monkeypatch):
