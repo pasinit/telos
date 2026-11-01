@@ -52,6 +52,7 @@ from telos.improvement import (
 )
 from telos.improvement.triggers import DEFAULT_POLL_INTERVAL_SECONDS, DEFAULT_THRESHOLD
 from telos.improver import AUTO_DEPLOY_THRESHOLD
+from telos.services.memory_reconcile import AGENT_SLUG as MEMORY_STEWARD_SLUG
 from telos.services.scheduler import BackgroundScheduler, SchedulerShutdownError
 
 log = logging.getLogger(__name__)
@@ -69,6 +70,10 @@ __all__ = [
 GetAgentStateFn = Callable[[str, str], AgentImprovementState | None]
 ListAgentPairsFn = Callable[[], list[tuple[str, str]]]
 ConfigClientFactory = Callable[[], RecordatioConfigClient]
+
+# Agents whose prompt is a fixed contract, never rewritten by the improver: the
+# memory steward's judging rules mirror what Recordatio verifies.
+NO_IMPROVEMENT_SLUGS = frozenset({MEMORY_STEWARD_SLUG})
 
 
 class ImprovementService:
@@ -123,7 +128,7 @@ class ImprovementService:
         self._config_client_factory = config_client_factory or self._default_client_factory
 
         self._trigger = MessageCountTrigger(
-            list_pairs_fn=list_pairs_fn,
+            list_pairs_fn=lambda: [p for p in list_pairs_fn() if p[1] not in NO_IMPROVEMENT_SLUGS],
             get_state_fn=get_agent_state_fn,
             on_threshold_fn=self._on_threshold,
             threshold=improve_every,

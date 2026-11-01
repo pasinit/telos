@@ -1,0 +1,59 @@
+{
+  "tool": {
+    "name": "memory.reconcile_finish_preview",
+    "title": "Preview memory reconcile finish",
+    "description": "What memory.reconcile_finish would do (preview: nothing is changed). Call once, at the end.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "dry_run": {
+          "const": true
+        },
+        "would_delete": {
+          "type": "integer"
+        },
+        "ops_settled": {
+          "type": "integer"
+        },
+        "ops_pending": {
+          "type": "integer"
+        },
+        "open_pairs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "dry_run",
+        "would_delete",
+        "ops_settled",
+        "ops_pending",
+        "open_pairs"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.reconcile_finish_preview",
+    "effect": "read",
+    "timeout_seconds": 300,
+    "max_output_bytes": 4096
+  }
+}

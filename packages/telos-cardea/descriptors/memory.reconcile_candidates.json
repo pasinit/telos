@@ -1,0 +1,201 @@
+{
+  "tool": {
+    "name": "memory.reconcile_candidates",
+    "title": "Memory pairs to judge",
+    "description": "Fetch the next batch of memory pairs to judge for this user's nightly reconcile. Each pair has a pair_token, the two memories (A and B) and, for pairs from a proposed clean-up, may_drop_only. Empty pairs (or budget_left 0) means you are done: call memory.reconcile_finish.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "default": 10
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pair_token": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "signal": {
+                "type": "string"
+              },
+              "op_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "may_drop_only": {
+                "enum": [
+                  "A",
+                  "B",
+                  null
+                ]
+              },
+              "a": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "scope": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "content": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "valid_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "asserted_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "valid_until": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "scope",
+                  "type",
+                  "content"
+                ]
+              },
+              "b": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "scope": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "content": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "valid_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "asserted_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "valid_until": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "scope",
+                  "type",
+                  "content"
+                ]
+              }
+            },
+            "required": [
+              "pair_token",
+              "a",
+              "b"
+            ]
+          }
+        },
+        "budget_left": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "more": {
+          "type": "boolean"
+        },
+        "finished": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run_id",
+        "pairs",
+        "budget_left",
+        "more",
+        "finished"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.reconcile_candidates",
+    "effect": "read",
+    "timeout_seconds": 60,
+    "max_output_bytes": 61440
+  }
+}

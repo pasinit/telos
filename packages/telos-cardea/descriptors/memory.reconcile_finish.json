@@ -1,0 +1,94 @@
+{
+  "tool": {
+    "name": "memory.reconcile_finish",
+    "title": "Finish memory reconcile",
+    "description": "Close tonight's memory reconcile once memory.reconcile_candidates has no more pairs: removes exact duplicates, settles the proposed clean-ups and returns the run summary. Call once, at the end.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "dry_run": {
+          "const": false
+        },
+        "deleted": {
+          "type": "integer"
+        },
+        "by_relation": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "by_source": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "verdicts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "kept_reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "ops_applied": {
+          "type": "integer"
+        },
+        "ops_dismissed": {
+          "type": "integer"
+        },
+        "ops_pending": {
+          "type": "integer"
+        },
+        "legacy_unclassified_kept": {
+          "type": "integer"
+        },
+        "open_pairs": {
+          "type": "integer"
+        },
+        "vacuumed": {
+          "type": "boolean"
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run_id",
+        "dry_run",
+        "deleted"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.reconcile_finish",
+    "effect": "effect",
+    "timeout_seconds": 300,
+    "max_output_bytes": 8192,
+    "idempotency_scope": [],
+    "reconciler": "memory.reconcile_finish.reconcile"
+  }
+}

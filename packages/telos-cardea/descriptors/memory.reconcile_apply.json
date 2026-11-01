@@ -1,0 +1,148 @@
+{
+  "tool": {
+    "name": "memory.reconcile_apply",
+    "title": "Submit memory verdict",
+    "description": "Submit your verdict on one memory pair. Recordatio checks the quotes against the stored memories and deletes the dropped memory only if every check passes; otherwise both are kept. One call per pair; a repeated call returns the first outcome.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "pair_token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400,
+          "description": "The pair's pair_token from memory.reconcile_candidates, copied exactly."
+        },
+        "verdict": {
+          "type": "object",
+          "description": "Your verdict on the pair. Quote both memories verbatim; never write new memory text.",
+          "properties": {
+            "relation": {
+              "enum": [
+                "duplicate_subsumed",
+                "supersedes",
+                "compatible",
+                "unrelated",
+                "unsure"
+              ]
+            },
+            "keep": {
+              "enum": [
+                "A",
+                "B",
+                null
+              ]
+            },
+            "drop": {
+              "enum": [
+                "A",
+                "B",
+                null
+              ]
+            },
+            "facts": {
+              "type": "array",
+              "maxItems": 40,
+              "description": "For duplicate_subsumed / supersedes: every fact of the dropped memory.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "dropped_fact": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                    "description": "Exact substring of the dropped memory."
+                  },
+                  "kept_span": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                    "description": "Exact substring of the kept memory stating (same) or replacing (replaced) it."
+                  },
+                  "status": {
+                    "enum": [
+                      "same",
+                      "replaced"
+                    ]
+                  }
+                },
+                "required": [
+                  "dropped_fact",
+                  "kept_span",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "evidence": {
+              "type": "string",
+              "maxLength": 500
+            }
+          },
+          "required": [
+            "relation"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "pair_token",
+        "verdict"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "enum": [
+            "deleted",
+            "kept",
+            "stale",
+            "would_delete"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "kept_unit_id": {
+          "type": "string"
+        },
+        "dropped_unit_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "reason",
+        "dry_run",
+        "replayed"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "cardea": {
+    "version": 1,
+    "handler": "memory.reconcile_apply",
+    "effect": "effect",
+    "timeout_seconds": 60,
+    "max_output_bytes": 4096,
+    "idempotency_scope": [
+      "/pair_token"
+    ],
+    "reconciler": "memory.reconcile_apply.reconcile"
+  }
+}
