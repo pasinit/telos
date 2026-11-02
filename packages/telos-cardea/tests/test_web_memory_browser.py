@@ -242,6 +242,33 @@ async def test_browser_click_follows_target(make_context: MakeContext) -> None:
         await browser.click({**args, "target": "Missing"}, make_context())
 
 
+async def test_browser_open_flags_unhydrated_spa_shell_as_not_empty(make_context: MakeContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A client-rendered career portal (e.g. BFI) returns an app shell with ~0 chars of visible
+    # text; that must be flagged, not returned as a clean empty page the agent reports as checked.
+    shell = "<html><head><script>" + "const x = 1;" * 400 + "</script></head><body><div id=\"__next\"></div></body></html>"
+    page = FakePage("https://bfijobsandopportunities.bfi.org.uk/")
+    page.html = shell
+
+    async def with_page(url: str, action: Any) -> Any:
+        return await action(page)
+
+    monkeypatch.setattr(browser, "_with_page", with_page)
+    monkeypatch.setattr(browser, "is_private_url", lambda url: False)
+    out = await browser.open_page({"url": page.url}, make_context())
+    assert out["rendered_empty"] is True
+    assert "NOT verified as empty" in out["caveat"]
+    assert out["total_chars"] <= browser.RENDERED_EMPTY_MAX_CHARS
+    assert_output("browser.open", out)
+
+
+@pytest.mark.usefixtures("fake_browser")
+async def test_browser_open_does_not_flag_a_text_page(make_context: MakeContext) -> None:
+    # FakePage's default html is a text-rich page: no empty-render flag.
+    out = await browser.open_page({"url": "https://example.com/"}, make_context())
+    assert "rendered_empty" not in out and "caveat" not in out
+    assert_output("browser.open", out)
+
+
 @pytest.mark.usefixtures("fake_browser")
 async def test_browser_refuses_private_urls(make_context: MakeContext) -> None:
     with pytest.raises(OperationRejected, match="private"):
