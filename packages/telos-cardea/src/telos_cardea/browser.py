@@ -24,6 +24,7 @@ import contextlib
 import ipaddress
 import logging
 import os
+import re
 import socket
 from typing import Any
 from urllib.parse import urlparse
@@ -188,6 +189,26 @@ def _text(html: str) -> str:
     return visible_text(html)
 
 
+# A client-rendered app serves an almost text-free shell and fills it in with JavaScript we
+# did not (or could not) run: near-zero visible text is NOT evidence that the page/inventory is
+# empty. Flag it rather than returning it as clean empty content — mirroring the "access
+# denied/challenge ... not empty results" discipline for 4xx and Cloudflare.
+RENDERED_EMPTY_MAX_CHARS = 32
+RENDERED_EMPTY_CAVEAT = ("No extractable text: the page is likely client-rendered (a JavaScript app shell) "
+                         "and was NOT verified as empty inventory.")
+# A known SPA mount root (#__next/#root/[ng-app]/…) or a server-rendered-off marker.
+_SPA_ROOT_RE = re.compile(r"""\bid\s*=\s*["']?(?:__next|__nuxt|root|app|q-app|svelte)\b"""
+                          r"""|\bng-app\b|\bdata-reactroot\b|\bdata-server-rendered\b""", re.IGNORECASE)
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def looks_client_rendered(html: str) -> bool:
+    """Heuristic: a known SPA mount root, or substantial ``<script>`` with effectively no body text."""
+    if _SPA_ROOT_RE.search(html):
+        return True
+    return sum(len(match.group(1)) for match in _SCRIPT_RE.finditer(html)) >= 2000
+
+
 async def _guard(route: Any) -> None:
     request = route.request
     if allow_request(request.method, request.url):
@@ -289,6 +310,10 @@ async def _capture(page: Any, offset: int = 0) -> Output:
     }
     if structured is not None:
         out["structured"] = structured
+    elif len(content.strip()) <= RENDERED_EMPTY_MAX_CHARS and looks_client_rendered(html):
+        # Guard so the agent does not read an unhydrated SPA shell as a confirmed-empty source.
+        out["rendered_empty"] = True
+        out["caveat"] = RENDERED_EMPTY_CAVEAT
     # Over Cardea's result cap: fewer controls, a shorter page (the rest stays reachable via
     # next_offset), then no structured data.
     fitted, trimmed = fit(out, ("list", "interactive"), ("text", "content"), ("drop", "structured"))

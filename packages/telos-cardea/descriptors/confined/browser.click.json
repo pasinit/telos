@@ -74,6 +74,13 @@
         },
         "structured": {
           "type": "object"
+        },
+        "rendered_empty": {
+          "type": "boolean",
+          "description": "True when the page rendered ~no extractable text but looks client-rendered (a JS app shell); not evidence of empty inventory."
+        },
+        "caveat": {
+          "type": "string"
         }
       },
       "required": [
