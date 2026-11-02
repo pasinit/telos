@@ -26,6 +26,11 @@ def context(tmp_path: Path) -> ToolContext:
     ("Marylebone, London W1", ["Marylebone London W1", "W1", "Marylebone"]),
     ("SW11", ["SW11"]),
     ("Brixton", ["Brixton"]),
+    # Possessive apostrophes must not split the name: "King's Cross" is "Kings-Cross" on the
+    # portals, so the candidate is "Kings Cross", never "King s Cross" (which 404s).
+    ("King's Cross", ["Kings Cross"]),
+    ("King’s Cross", ["Kings Cross"]),
+    ("King's Cross N1C", ["Kings Cross N1C", "N1C", "Kings Cross"]),
     ("  ", []),
 ])
 def test_location_candidates(location: str, expected: list[str]) -> None:

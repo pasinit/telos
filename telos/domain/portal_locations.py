@@ -11,6 +11,14 @@ import re
 _DISTRICT_RE = re.compile(r"[a-z]{1,2}\d[a-z\d]?", re.IGNORECASE)  # W1, W1U, SW11, EC1A
 _INWARD_RE = re.compile(r"\d[a-z]{2}", re.IGNORECASE)  # the "4AB" of "W2 4AB"
 _NOISE = {"london", "uk", "england"}
+# An apostrophe is a non-word char, so tokenizing "King's" with [^\W_]+ splits it into
+# "King"/"s"; dropping the apostrophe first keeps "Kings" (the portals' real page name).
+_APOSTROPHE_RE = re.compile(r"(?<=[^\W\d_])['’](?=[^\W\d_])")
+
+
+def normalize_apostrophes(location: str) -> str:
+    """``location`` with apostrophes between letters removed ("King's" -> "Kings", "O'Brien" -> "OBrien")."""
+    return _APOSTROPHE_RE.sub("", location)
 
 
 def location_candidates(location: str) -> list[str]:
@@ -19,6 +27,7 @@ def location_candidates(location: str) -> list[str]:
     "Notting Hill, London" also tries the part before the first comma. A name that merely
     contains a noise word ("London Bridge") is never shortened.
     """
+    location = normalize_apostrophes(location)
     words = re.findall(r"[^\W_]+", location)
     if not words:
         return []

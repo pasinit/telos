@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunp
 from telos_cardea._cardea import Arguments, OperationContext, Output
 from telos_cardea._vendor import agencies, onthemarket, rightmove, zoopla
 from telos_cardea._vendor.agency_types import AGENCY_LABELS, SearchFilters
-from telos_cardea._vendor.portal_locations import location_candidates
+from telos_cardea._vendor.portal_locations import location_candidates, normalize_apostrophes
 from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 from telos_cardea.fetch import Fetcher
@@ -44,7 +44,7 @@ def _unavailable(site: str, url: str, reason: str) -> Output:
 def rightmove_url(location: str, min_beds: int | None = None, max_price: int | None = None, for_sale: bool = True,
                   max_beds: int | None = None) -> str:
     base = "https://www.rightmove.co.uk/property-for-sale/" if for_sale else "https://www.rightmove.co.uk/property-to-rent/"
-    area = quote(location.strip().replace(" ", "-"), safe="-")
+    area = quote(normalize_apostrophes(location.strip()).replace(" ", "-"), safe="-")
     params = {"includeLetAgreed": "false"} if not for_sale else {}
     if min_beds is not None:
         params["minBedrooms"] = str(min_beds)
@@ -59,7 +59,7 @@ _POSTCODE_RE = re.compile(r"^[a-z]{1,2}\d[a-z\d]?(-?\d[a-z]{2})?$")
 
 
 def _location_slug(location: str) -> str:
-    parts = re.findall(r"[^\W_]+", location.strip().lower())
+    parts = re.findall(r"[^\W_]+", normalize_apostrophes(location.strip().lower()))
     return "-".join(parts) or "uk"
 
 
