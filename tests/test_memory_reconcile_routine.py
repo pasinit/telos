@@ -8,7 +8,7 @@ from telos.core.persistence import Database
 from telos.core.repos.registry import RegistryRepo
 from telos.core.repos.routines import RoutineRepo
 from telos.services import memory_reconcile
-from telos.services.memory_reconcile import AGENT_SLUG, JUDGE_RULES, SYSTEM_PROMPT, TOOLS, seed
+from telos.services.memory_reconcile import AGENT_SLUG, JUDGE_RULES, LOOP, SYSTEM_PROMPT, TOOLS, seed
 
 
 def _repos(tmp_path: Path) -> tuple[RegistryRepo, RoutineRepo]:
@@ -53,6 +53,20 @@ def test_routine_mirrors_to_reconcile_operations(tmp_path: Path) -> None:
     assert shadow.spec["template"]["operations"] == [
         "memory.reconcile_candidates", "memory.reconcile_apply_preview", "memory.reconcile_finish_preview",
     ]
+
+
+def test_blocked_reply_is_machine_parseable() -> None:
+    # When the reconcile tools are absent the local run is a guaranteed no-op; the
+    # agent must emit a structured, parseable block the nightly monitor can detect,
+    # not just the terse free-text phrase (see memory_reconcile.py sub-fix 2).
+    assert "STATUS: BLOCKED" in LOOP
+    assert "STATUS: BLOCKED" in SYSTEM_PROMPT
+    # The original phrase is preserved as the machine-readable reason for continuity.
+    assert "reason: memory reconcile tools unavailable" in LOOP
+    for field in ("missing_tools:", "state_changed: none", "action:"):
+        assert field in LOOP
+    for tool in TOOLS:
+        assert tool in LOOP
 
 
 def test_judge_rules_state_the_verdict_contract() -> None:

@@ -87,8 +87,18 @@ your verdict. Do not skip pairs: answer "unsure" when you cannot decide.
 clean-ups applied, dismissed and still pending, and any tool errors. Name \
 memories by id only; never quote or restate their content.
 
-If these tools are not available in this run, reply "memory reconcile tools \
-unavailable" and stop.
+If these tools are not available in this run you cannot reconcile anything: do \
+not guess, improvise or call other tools. Reply with EXACTLY this block and \
+nothing else, then stop —
+
+    STATUS: BLOCKED
+    reason: memory reconcile tools unavailable
+    missing_tools: memory_reconcile_candidates, memory_reconcile_apply, memory_reconcile_finish
+    state_changed: none
+    action: needs retry once the reconcile operations are provisioned; escalate to operator
+
+The nightly monitor parses this block to detect the missed reconcile, so keep \
+it verbatim and do not wrap it in prose.
 """
 
 SYSTEM_PROMPT = f"{LOOP}\n{JUDGE_RULES}"
@@ -132,4 +142,4 @@ def seed(registry: RegistryRepo, routines: RoutineRepo, user_id: str, *, apply: 
     return SeedResult(user_id, not agent_exists, routine, True)
 
 
-__all__ = ["AGENT_SLUG", "JUDGE_RULES", "ROUTINE_DESCRIPTION", "SYSTEM_PROMPT", "TOOLS", "SeedResult", "seed"]
+__all__ = ["AGENT_SLUG", "JUDGE_RULES", "LOOP", "ROUTINE_DESCRIPTION", "SYSTEM_PROMPT", "TOOLS", "SeedResult", "seed"]
