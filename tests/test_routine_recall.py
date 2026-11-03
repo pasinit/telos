@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -90,6 +92,68 @@ async def test_priority_recall_keeps_dated_observations_and_conflicts():
     assert not result["truncated"]
 
 
+class DelayedClient:
+    """Answers each query after its own delay and records peak concurrency."""
+
+    def __init__(self, responses: dict[str, tuple[float, object]]):
+        self.responses = responses
+        self.active = 0
+        self.peak = 0
+        self.calls: list[str] = []
+
+    async def memory_search(self, user_id, query, **kwargs):
+        self.calls.append(query)
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            delay, outcome = self.responses[query]
+            await asyncio.sleep(delay)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        finally:
+            self.active -= 1
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
+async def test_priority_recall_searches_concurrently_and_keeps_query_order():
+    # The first query finishes last and the second fails; results, errors and
+    # counts must still follow query order, exactly as a sequential run would.
+    history = [{"id": "h1", "content": "Applied to Example", "asserted_at": "2026-09-01"},
+               {"id": "h2", "content": "Application pending", "asserted_at": "2026-09-02"}]
+    deadline = {"id": "d", "content": "Deadline September 15", "valid_until": "2026-09-15"}
+    slow = DelayedClient({"history": (0.3, {"results": history}),
+                          "status": (0.1, RuntimeError("retrieval offline")),
+                          "deadlines": (0.0, {"results": [deadline, history[0]]})})
+    started = time.monotonic()
+    result = await RoutineRecall(lambda: slow, {"owner/jobber": ["history", "status", "deadlines"]})("owner", "jobber")
+    elapsed = time.monotonic() - started
+    assert slow.peak == 3 and elapsed < 0.4  # sequential would take >= 0.4 s
+    assert [record["id"] for record in result["records"]] == ["h1", "h2", "d"]
+    assert result["errors"] == [{"query": "status", "error": "RuntimeError: retrieval offline"}]
+    assert result["query_counts"] == [
+        {"query": "history", "retrieved": 2, "included": 2, "omitted": 0},
+        {"query": "status", "retrieved": 0, "included": 0, "omitted": 0},
+        {"query": "deadlines", "retrieved": 2, "included": 1, "omitted": 1},
+    ]
+
+    sequential = Client([{"results": history}, RuntimeError("retrieval offline"), {"results": [deadline, history[0]]}])
+    expected = await RoutineRecall(lambda: sequential, {"owner/jobber": ["history", "status", "deadlines"]},
+                                   max_concurrency=1)("owner", "jobber")
+    assert {k: v for k, v in result.items() if k != "as_of"} == {k: v for k, v in expected.items() if k != "as_of"}
+
+
+async def test_priority_recall_concurrency_is_bounded():
+    client = DelayedClient({q: (0.05, {"results": []}) for q in ("a", "b", "c")})
+    await RoutineRecall(lambda: client, {"owner/jobber": ["a", "b", "c"]}, max_concurrency=2)("owner", "jobber")
+    assert client.peak == 2 and client.calls == ["a", "b", "c"]
+
+
 async def test_routine_records_priority_context_and_complete_email_body(tmp_path):
     history = ConversationLog(tmp_path / "u" / "jobber" / "history.db")
     class Agent:
@@ -132,8 +196,6 @@ async def test_routine_deduplicates_only_confirmed_email_to_recipient(tmp_path, 
 
 @pytest.mark.parametrize("failure", ["empty_output", "exception", "cancelled", "stream_error"])
 async def test_routine_records_one_terminal_failure_per_turn(tmp_path, failure):
-    import asyncio
-
     from telos.services.routine_execution import RoutineStreamError
 
     history = ConversationLog(tmp_path / "u" / "homey" / "history.db")

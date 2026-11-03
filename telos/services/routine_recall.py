@@ -1,4 +1,5 @@
 """Priority retrieval for routines with explicitly configured reference needs."""
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -15,6 +16,10 @@ from datetime import UTC, datetime
 #     the front of each query's candidate list so they are admitted into the
 #     reserved char-budget share before the summary swarm can consume it.
 PER_QUERY_K = 25
+# One routine's Recordatio searches run concurrently: each takes seconds, and
+# one after another they overran the routine-context recall timeout. Bounded
+# so a longer query list cannot fan out unchecked.
+MAX_CONCURRENT_SEARCHES = 3
 STATUS_EVENT_TERMS = ("interview", "shortlist", "offer", "reject")
 
 
@@ -24,11 +29,12 @@ def _is_status_event(normalized_content: str) -> bool:
 
 class RoutineRecall:
     def __init__(self, make_client: Callable, queries: dict[str, list[str]], *, max_chars: int = 12000,
-                 per_query_k: int = PER_QUERY_K):
+                 per_query_k: int = PER_QUERY_K, max_concurrency: int = MAX_CONCURRENT_SEARCHES):
         self._make_client = make_client
         self._queries = queries
         self._max_chars = max_chars
         self._per_query_k = per_query_k
+        self._max_concurrency = max(1, max_concurrency)
 
     async def __call__(self, user_id: str, slug: str) -> dict | None:
         queries = self._queries.get(f"{user_id}/{slug}", [])[:3]
@@ -38,19 +44,29 @@ class RoutineRecall:
         evidence = {"as_of": as_of, "queries": queries, "records": [], "errors": [], "truncated": False}
         batches = []
         evidence["query_counts"] = []
-        async with self._make_client() as client:
-            for query in queries:
-                units = []
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def search(client, query: str) -> tuple[list, str | None]:
+            # A failing query becomes an error record, never an exception.
+            async with semaphore:
                 try:
                     result = await client.memory_search(user_id, query, slug=slug, as_of=as_of,
                                                         mode="production", k=self._per_query_k)
-                    units = result.get("results", [])[:self._per_query_k]
+                    return result.get("results", [])[:self._per_query_k], None
                 except Exception as exc:
-                    evidence["errors"].append({"query": query, "error": f"{type(exc).__name__}: {exc}"})
-                batches.append(units)
-                # Reserve the maximum counter widths before allocating records.
-                evidence["query_counts"].append({"query": query, "retrieved": len(units),
-                                                 "included": len(units), "omitted": len(units)})
+                    return [], f"{type(exc).__name__}: {exc}"
+
+        async with self._make_client() as client:
+            # gather returns outcomes in query order, so the ranking and dedup
+            # below do not depend on which search finishes first.
+            outcomes = await asyncio.gather(*(search(client, query) for query in queries))
+        for query, (units, error) in zip(queries, outcomes, strict=True):
+            if error is not None:
+                evidence["errors"].append({"query": query, "error": error})
+            batches.append(units)
+            # Reserve the maximum counter widths before allocating records.
+            evidence["query_counts"].append({"query": query, "retrieved": len(units),
+                                             "included": len(units), "omitted": len(units)})
 
         candidates = []
         for units in batches:
@@ -109,7 +125,7 @@ class RoutineRecall:
                 if rank < len(records):
                     include(index, records[rank], remaining)
 
-        for counts, count in zip(evidence["query_counts"], included):
+        for counts, count in zip(evidence["query_counts"], included, strict=True):
             # Included counts physical records attributed to this query;
             # omitted includes duplicates, blank results and budget exclusions.
             counts["included"] = count

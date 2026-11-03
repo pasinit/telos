@@ -14,12 +14,17 @@ from telos_cardea.bounded import fit
 from telos_cardea.config import Config, load_config
 
 TEXT_BLOCKS = ("delivery_history", "ledger_summary", "reserved_recall")
+# Telos waits up to 45 s (TELOS_INTERNAL_RECALL_TIMEOUT) for the reserved recall
+# before disclosing it as unavailable, so the call needs that plus a margin; it
+# stays below the descriptor's timeout_seconds (60) so Cardea sees our error.
+TIMEOUT_SECONDS = 55
 
 
 async def routine_context(arguments: Arguments, context: OperationContext, *, config: Config | None = None,
                           client: httpx.AsyncClient | None = None) -> Output:
     """Entry point ``telos.routine_context``."""
-    response = await telos_api.request(config or load_config(), context, "GET", "/routine-context", client=client)
+    response = await telos_api.request(config or load_config(), context, "GET", "/routine-context", client=client,
+                                      timeout=TIMEOUT_SECONDS)
     body = telos_api.json_object(response)
     # Over Cardea's result cap, the largest block is cut first.
     largest = sorted((k for k in TEXT_BLOCKS if isinstance(body.get(k), str)), key=lambda k: len(body[k]), reverse=True)

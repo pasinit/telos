@@ -55,7 +55,7 @@ def scope_headers(context: OperationContext) -> dict[str, str]:
 
 async def request(config: Config, context: OperationContext, method: str, path: str, *, params: dict[str, Any] | None = None,
                   body: Any = None, headers: dict[str, str] | None = None, allow_not_found: bool = False,
-                  client: httpx.AsyncClient | None = None) -> httpx.Response:
+                  client: httpx.AsyncClient | None = None, timeout: float = TIMEOUT_SECONDS) -> httpx.Response:
     """One authenticated call. Refusals Telos is certain about raise ``OperationRejected``.
 
     - missing configuration, an unreachable listener, 400 (missing scope headers), 401/403, 404,
@@ -65,7 +65,8 @@ async def request(config: Config, context: OperationContext, method: str, path: 
       propagate, so Cardea leaves an effect uncertain for its reconciler.
 
     ``allow_not_found`` returns a resource 404 to the caller instead (the reconciler's by-key
-    lookup); an unmapped-scope 404 always raises.
+    lookup); an unmapped-scope 404 always raises. ``timeout`` (seconds) bounds this call, whether
+    on its own client or the one passed in.
     """
     if not config.telos_url:
         raise OperationRejected("Telos internal URL is not configured (telos.url / TELOS_INTERNAL_URL)")
@@ -73,10 +74,10 @@ async def request(config: Config, context: OperationContext, method: str, path: 
     url = config.telos_url.rstrip("/") + API_PREFIX + path
     try:
         if client is None:
-            async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as own:
+            async with httpx.AsyncClient(timeout=timeout) as own:
                 response = await own.request(method, url, params=params, json=body, headers=all_headers)
         else:
-            response = await client.request(method, url, params=params, json=body, headers=all_headers)
+            response = await client.request(method, url, params=params, json=body, headers=all_headers, timeout=timeout)
     except httpx.ConnectError as error:
         # Nothing reached Telos.
         raise OperationRejected(f"Telos internal API is unreachable: {error}") from error

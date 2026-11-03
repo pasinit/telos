@@ -30,8 +30,9 @@ Environment:
 - ``TELOS_SPIFFE_ENDPOINT_SOCKET``: Workload API address (default
   ``unix:///run/spire/agent.sock``).
 - ``TELOS_INTERNAL_RECALL_TIMEOUT``: seconds the routine context waits for the
-  reserved memory recall before disclosing it as unavailable (default 15; Cardea
-  gives a context call 30 s in all).
+  reserved memory recall before disclosing it as unavailable (default 45; the
+  telos-cardea client waits 55 s for the context call and Cardea gives it 60 s
+  in all, so keep it below both).
 
 Each request logs one INFO line on ``telos.internal_cardea``: method, route
 template, caller SPIFFE ID, status, duration and error code; never query
@@ -83,7 +84,10 @@ DEFAULT_ALLOWED_SUB = "spiffe://cardea.internal/runtime/kernel"
 DEFAULT_WORKLOAD_SOCKET = "unix:///run/spire/agent.sock"
 MAX_IDEMPOTENCY_KEY = 128
 MAX_LEDGER_PAGE = 200
-DEFAULT_RECALL_TIMEOUT = 15.0
+# Below telos-cardea's client timeout for the routine-context call (55 s), which
+# is below the descriptor's timeout_seconds (60), so a slow recall is disclosed
+# in the context instead of failing the whole call.
+DEFAULT_RECALL_TIMEOUT = 45.0
 
 _listing_url: TypeAdapter[HttpUrl] = TypeAdapter(HttpUrl)
 
