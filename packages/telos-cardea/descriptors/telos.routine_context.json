@@ -2,11 +2,17 @@
   "tool": {
     "name": "telos.routine_context",
     "title": "Routine context",
-    "description": "This agent's routine context from Telos: reporting date and timezone, recent deliveries, the property ledger summary and reserved recall. Read it before starting the routine.",
+    "description": "This agent's routine context from Telos: reporting date and timezone, recent deliveries, the property ledger summary, reserved recall and the routine's own recent results. Read it before starting the routine.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
-      "properties": {},
+      "properties": {
+        "routine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
       "additionalProperties": false
     },
     "outputSchema": {
@@ -42,6 +48,9 @@
           "type": "string"
         },
         "reserved_recall": {
+          "type": "string"
+        },
+        "recent_runs": {
           "type": "string"
         }
       },

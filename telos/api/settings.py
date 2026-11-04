@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     # ``CLAUDE_CODE_OAUTH_TOKEN`` (read from the env by the bundled CLI, not a
     # field here). ``owner_email`` gets the nightly digest; empty ⇒ no digest.
     routine_recall_queries: dict[str, list[str]] = {}
+    # Each routine run sees its own previous final responses (newest first):
+    # at most this many runs (0 disables) within this many characters in total.
+    routine_recent_runs: int = 7
+    routine_recent_runs_chars: int = 12000
     nightly_feedback_enabled: bool = False
     nightly_feedback_hour: int = 3  # local-time hour for the 03:30 cron
     nightly_feedback_minute: int = 30

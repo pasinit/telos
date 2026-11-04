@@ -80,6 +80,9 @@ class RoutineStore:
     def recent_results(self, user_id: str, agent_slug: str, limit: int = 10) -> list[RoutineResult]:
         return self.repo.recent_results(user_id, agent_slug, limit)
 
+    def results_for_routine(self, routine_id: str, limit: int) -> list[RoutineResult]:
+        return self.repo.results_for_routine(routine_id, limit)
+
 
 def _format_interval(seconds: int) -> str:
     """Human-readable interval string."""

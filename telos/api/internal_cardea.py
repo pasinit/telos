@@ -19,7 +19,9 @@ Scope comes from ``X-Cardea-Namespace: telos-<user>`` and ``X-Cardea-Agent:
 telos-<slug>`` (set by the operations package from Cardea's operation context,
 never from model-chosen tool arguments). An agent without an enabled routine
 that the bridge mirrors (its Cardea mode is shadow or live and it has a trigger
-spec) is a 404.
+spec) is a 404. The routine context's optional ``routine_id`` query parameter (from the
+Telos-authored trigger template) adds that routine's recent results, and only when it is a
+routine of the scoped agent.
 
 Environment:
 
@@ -68,9 +70,12 @@ from telos.local_time import local_now, local_timezone
 from telos.routine_invocation import RoutineInvocation
 from telos.services.routine_context import (
     RecallFn,
+    RecentRuns,
+    ResultsFn,
     delivery_history_block,
     history_path,
     ledger_summary_block,
+    recent_runs_for,
     reserved_recall,
     reserved_recall_block,
 )
@@ -105,6 +110,8 @@ class InternalApiDeps:
     allowed_sub: str = DEFAULT_ALLOWED_SUB
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     recall_timeout: float = DEFAULT_RECALL_TIMEOUT
+    results_fn: ResultsFn | None = None
+    recent_runs: RecentRuns = field(default_factory=RecentRuns)
 
 
 @dataclass(frozen=True)
@@ -235,6 +242,15 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
                                   history_path(deps.storage_root, routine.user_id, routine.agent_slug))
         raise ApiError(404, "no_mirrored_routine", "No mirrored routine for this agent")
 
+    def owned_routine(scope: AgentScope, routine_id: str | None) -> str | None:
+        """``routine_id`` when it names one of the scope agent's routines, else None (no recent runs)."""
+        if not routine_id:
+            return None
+        if any(r.id == routine_id and r.user_id == scope.user_id and r.agent_slug == scope.agent_slug for r in deps.routines()):
+            return routine_id
+        log.warning("routine context asked for routine %s outside %s/%s", routine_id, scope.user_id, scope.agent_slug)
+        return None
+
     def existing_ledger(scope: AgentScope) -> PropertyCandidateRepo | None:
         """The agent's ledger, without creating an empty one for read-only calls."""
         if not scope.history.exists() or not PropertyCandidateRepo.exists(Database(scope.history)):
@@ -247,6 +263,7 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
     async def routine_context(
         scope: AgentScope = Depends(agent_scope),
         slot_header: str | None = Header(default=None, alias="X-Cardea-Slot-Time"),
+        routine_id: str | None = Query(default=None, max_length=128),
     ) -> dict:
         slot = _slot_time(slot_header)
         invocation = RoutineInvocation(slot.astimezone(local_timezone()) if slot else local_now()).metadata()
@@ -263,6 +280,7 @@ def create_internal_app(deps: InternalApiDeps) -> FastAPI:
             "delivery_history": await delivery_history_block(scope.history, recipient),
             "ledger_summary": await asyncio.to_thread(ledger_summary_block, scope.history),
             "reserved_recall": reserved_recall_block(recall),
+            "recent_runs": await asyncio.to_thread(recent_runs_for, deps.results_fn, owned_routine(scope, routine_id), deps.recent_runs),
         }
 
     @router.get("/ledger")
@@ -390,6 +408,8 @@ def internal_api_from_env(
     storage_root: Path,
     get_user_email: Callable[[str], str | None],
     recall_fn: RecallFn | None,
+    results_fn: ResultsFn | None = None,
+    recent_runs: RecentRuns | None = None,
 ) -> InternalApiServer | None:
     """The internal API server when ``TELOS_INTERNAL_API=1``, else None. Call :meth:`InternalApiServer.start` on the loop."""
     if os.getenv("TELOS_INTERNAL_API", "").strip() != "1":
@@ -405,6 +425,8 @@ def internal_api_from_env(
         allowed_sub=os.getenv("TELOS_INTERNAL_ALLOWED_SUB", DEFAULT_ALLOWED_SUB),
         bridge=BridgeConfig.from_env(),
         recall_timeout=float(os.getenv("TELOS_INTERNAL_RECALL_TIMEOUT", str(DEFAULT_RECALL_TIMEOUT))),
+        results_fn=results_fn,
+        recent_runs=recent_runs or RecentRuns(),
     )
     host = os.getenv("TELOS_INTERNAL_API_HOST", "0.0.0.0")
     return InternalApiServer(create_internal_app(deps), host=host, warm=keys.warm)
