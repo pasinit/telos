@@ -21,9 +21,12 @@ from telos.services.agent_runtime import AgentRuntime
 from telos.services.email_notifications import EmailNotificationService
 from telos.services.routine_context import (
     RecallFn,
+    RecentRuns,
+    ResultsFn,
     delivery_history_block,
     history_path,
     ledger_summary_block,
+    recent_runs_for,
     reserved_recall,
     reserved_recall_block,
 )
@@ -106,6 +109,8 @@ class RoutineExecutor:
         base_url: str,
         storage_root: Path | None = None,
         recall_fn: RecallFn | None = None,
+        results_fn: ResultsFn | None = None,
+        recent_runs: RecentRuns | None = None,
     ) -> None:
         self._agent_runtime = agent_runtime
         self._email_service = email_service
@@ -114,9 +119,14 @@ class RoutineExecutor:
         self._base_url = base_url
         self._storage_root = storage_root
         self._recall_fn = recall_fn
+        self._results_fn = results_fn
+        self._recent_runs = recent_runs or RecentRuns()
 
-    async def execute(self, user_id: str, agent_slug: str, message: str) -> str:
+    async def execute(self, user_id: str, agent_slug: str, message: str, *, routine_id: str | None = None) -> str:
         """Execute a routine message against the agent and return the joined text.
+
+        With ``routine_id`` (and a ``results_fn``), that routine's previous final
+        responses are appended as a bounded "recent runs" block.
 
         Raises:
             RoutineStreamError: the stream emitted a ``stream_error`` event —
@@ -143,6 +153,8 @@ class RoutineExecutor:
             for block in (await delivery_history_block(history, recipient), ledger_summary_block(history)):
                 if block:
                     message += "\n\n" + block
+        if recent := await asyncio.to_thread(recent_runs_for, self._results_fn, routine_id, self._recent_runs):
+            message += "\n\n" + recent
         recall = await reserved_recall(self._recall_fn, user_id, agent_slug)
         if recall is not None:
             message += "\n\n" + reserved_recall_block(recall)
@@ -196,7 +208,7 @@ class RoutineExecutor:
         attempt = 0
         while True:
             try:
-                return await self.execute(user_id, agent_slug, message)
+                return await self.execute(user_id, agent_slug, message, routine_id=getattr(routine, "id", None))
             except RoutineStreamError as exc:
                 attempt += 1
                 if attempt > ROUTINE_STREAM_MAX_RETRIES or not _is_retryable_stream_error(exc.reason):

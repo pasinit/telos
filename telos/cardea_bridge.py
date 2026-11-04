@@ -176,6 +176,9 @@ class BridgeConfig:
     allow_drop: frozenset[str] = frozenset()
     # Send C2 context operations with each trigger (needs a Cardea that accepts them).
     context: bool = False
+    # Pass the routine id to ``telos.routine_context`` so the run gets its own recent results
+    # (needs the telos-cardea descriptor that accepts ``routine_id`` installed in Cardea first).
+    recent_runs: bool = False
     # Consecutive failed syncs before the operator is alerted.
     alert_after: int = 3
     # Cardea's cap on a whole request body; trigger specs are trimmed to fit under it.
@@ -235,6 +238,7 @@ class BridgeConfig:
             routines=routines,
             allow_drop=frozenset(str(t) for t in allow_drop),
             context=_flag("TELOS_CARDEA_CONTEXT"),
+            recent_runs=_flag("TELOS_CARDEA_RECENT_RUNS"),
             alert_after=max(1, int(os.getenv("TELOS_CARDEA_ALERT_AFTER", "3"))),
             max_request_bytes=int(os.getenv("TELOS_CARDEA_MAX_REQUEST_BYTES", "32768")),
             attempt_timeout_seconds=_or(_int_env("TELOS_CARDEA_ATTEMPT_TIMEOUT_SECONDS"), cls.attempt_timeout_seconds),
@@ -379,15 +383,18 @@ def request_bytes(spec: dict[str, Any]) -> int:
     return len(json.dumps(spec).encode())
 
 
-def context_calls(routine: Routine, operations: list[str]) -> list[dict[str, Any]]:
+def context_calls(routine: Routine, operations: list[str], *, recent_runs: bool = False) -> list[dict[str, Any]]:
     """C2 context operations Cardea runs before each attempt (C4).
 
     ``memory.briefing`` is always included: every Telos turn gets Recordatio's briefing,
     whether or not the agent has memory tools. Its query is capped at the operation's 4000 chars.
+    With ``recent_runs``, ``telos.routine_context`` is told the routine id so it also returns this
+    routine's previous results; they live in the per-run context, not in the trigger's static
+    instructions, so they never compete with the prompt for the instructions limit.
     """
     query = (routine.description.strip() or routine.name or routine.id)[:BRIEFING_QUERY_CHARS]
     calls: list[dict[str, Any]] = [
-        {"operation": "telos.routine_context", "arguments": {}},
+        {"operation": "telos.routine_context", "arguments": {"routine_id": routine.id} if recent_runs else {}},
         {"operation": "memory.briefing", "arguments": {"query": query}},
     ]
     if any(op.startswith("ledger.") for op in operations):
@@ -460,7 +467,7 @@ def plan(
     if config.max_attempts is not None:
         template["max_attempts"] = config.max_attempts
     if config.context:
-        template["context"] = context_calls(routine, operations)
+        template["context"] = context_calls(routine, operations, recent_runs=config.recent_runs)
         template["grants"] += [c["operation"] for c in template["context"] if c["operation"] not in template["grants"]]
     spec = {
         "trigger_id": trigger_id(routine),

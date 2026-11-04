@@ -81,6 +81,19 @@ async def test_scope_headers_come_from_context(config: Config, make_context: Mak
     assert request.headers["X-Cardea-Slot-Time"] == "2026-10-20T08:00:00+01:00"
 
 
+async def test_routine_id_argument_selects_the_recent_runs(config: Config, make_context: MakeContext) -> None:
+    body = {**ROUTINE_CONTEXT, "recent_runs": "Recent runs of this routine ..."}
+    recorder = Recorder({("GET", "/internal/cardea/v1/routine-context"): httpx.Response(200, json=body)})
+    assert_input("telos.routine_context", {"routine_id": "r1"})
+    output = await routine.routine_context({"routine_id": "r1"}, make_context(), config=config, client=recorder.client())
+    assert output == body
+    assert_output("telos.routine_context", output)
+    request = recorder.requests[0]
+    assert dict(request.url.params) == {"routine_id": "r1"}
+    # The routine id is a query parameter only; scope still comes from the context.
+    assert request.headers["X-Cardea-Namespace"] == "telos-owner" and request.headers["X-Cardea-Agent"] == AGENT
+
+
 async def test_arguments_never_set_scope_headers(config: Config, make_context: MakeContext) -> None:
     recorder = Recorder({("GET", "/internal/cardea/v1/ledger"): httpx.Response(200, json={"items": [], "next_offset": None})})
     # Not valid per the schema, but even a forged argument must not reach the scope headers.

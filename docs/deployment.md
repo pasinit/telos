@@ -125,6 +125,15 @@ score task completion separately from response quality.
 ROUTINE_RECALL_QUERIES={"owner/jobber":["submitted applications and subsequent status updates"]}
 ```
 
+Each routine run also gets a "recent runs" block: that routine's own previous final responses
+(never its sibling routines'), newest first, delimited and labelled as data rather than
+instructions, so a routine description can tell the agent to compare against it.
+`ROUTINE_RECENT_RUNS` (default 7; 0 disables) bounds the number of runs and
+`ROUTINE_RECENT_RUNS_CHARS` (default 12000) the total response text: long responses keep
+their end, and the oldest runs are dropped first. Telos appends the block to the routine message;
+Cardea runs get it from `telos.routine_context` once `TELOS_CARDEA_RECENT_RUNS=1` passes the
+routine id there (install the telos-cardea descriptor that accepts `routine_id` first).
+
 ## Nightly coding worker (Linux, optional)
 
 The nightly implementer turns improvement proposals into draft PRs. On Linux it can run in a

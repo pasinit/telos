@@ -218,6 +218,17 @@ class RoutineRepo:
             """, (user_id, agent_slug, limit)).fetchall()
         return [RoutineResult(routine_id=r["routine_id"], response=r["response"], timestamp=r["timestamp"]) for r in rows]
 
+    def results_for_routine(self, routine_id: str, limit: int) -> list[RoutineResult]:
+        """This routine's stored results (not its siblings'), newest first."""
+        if limit <= 0:
+            return []
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT routine_id, response, timestamp FROM routine_results WHERE routine_id=? ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (routine_id, limit),
+            ).fetchall()
+        return [RoutineResult(routine_id=r["routine_id"], response=r["response"], timestamp=r["timestamp"]) for r in rows]
+
     def _row_to_routine(self, row: sqlite3.Row) -> Routine:
         keys = row.keys()
         if "interval_seconds" in keys:

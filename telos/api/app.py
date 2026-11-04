@@ -82,6 +82,7 @@ from telos.services.nightly import (
 )
 from telos.services.nightly.implementer import ImplementerReportStore, NightlyImplementer
 from telos.services.nightly.synthesizer import ImprovementSynthesizer, SynthReportStore
+from telos.services.routine_context import RecentRuns
 from telos.services.routine_recall import RoutineRecall
 from telos.transport.sandbox import SandboxRunner
 
@@ -364,6 +365,7 @@ _routine_recall = RoutineRecall(
     lambda: RecordatioFeedbackClient(settings.recordatio_url, settings.chat_api_key or "nightly"),
     settings.routine_recall_queries,
 )
+_recent_runs = RecentRuns(settings.routine_recent_runs, settings.routine_recent_runs_chars)
 _routine_executor = RoutineExecutor(
     agent_runtime=_agent_runtime,
     email_service=_email_service,
@@ -372,6 +374,8 @@ _routine_executor = RoutineExecutor(
     base_url=settings.base_url,
     storage_root=settings.storage_root,
     recall_fn=_routine_recall,
+    results_fn=_routine_store.results_for_routine,
+    recent_runs=_recent_runs,
 )
 
 
@@ -448,6 +452,7 @@ async def lifespan(app: FastAPI):
     internal_api = internal_api_from_env(
         routines=_routine_store.list_all_enabled, agent_tools=_agent_tools, storage_root=settings.storage_root,
         get_user_email=_registry.get_user_email, recall_fn=_routine_recall,
+        results_fn=_routine_store.results_for_routine, recent_runs=_recent_runs,
     )
     if internal_api is not None:
         internal_api.start()

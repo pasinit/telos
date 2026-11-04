@@ -94,6 +94,16 @@ async def test_oversize_routine_context_cuts_the_largest_block(config: Config, m
     assert output["reserved_recall"] == "Keep me." and output["ledger_summary"] == ROUTINE_CONTEXT["ledger_summary"]
 
 
+async def test_oversize_recent_runs_are_cut_before_other_blocks(config: Config, make_context: MakeContext) -> None:
+    body = {**ROUTINE_CONTEXT, "recent_runs": "Run 1: flat at 1 Example Road. " * 4000, "reserved_recall": "Keep me."}
+    recorder = Recorder({("GET", "/internal/cardea/v1/routine-context"): httpx.Response(200, json=body)})
+    output = await routine.routine_context({"routine_id": "r1"}, make_context(), config=config, client=recorder.client())
+    assert_output("telos.routine_context", output)
+    assert output["truncated"] == ["recent_runs"] and output["recent_runs"].endswith(TRUNCATION_MARK)
+    assert output["recent_runs"].startswith("Run 1:")
+    assert output["reserved_recall"] == "Keep me." and output["delivery_history"] == ROUTINE_CONTEXT["delivery_history"]
+
+
 async def test_oversize_briefing_and_recall_are_trimmed(config: Config, make_context: MakeContext) -> None:
     def briefing(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"briefing": "Prefers south-facing flats. " * 4000, "units": 90})
