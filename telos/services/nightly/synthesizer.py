@@ -60,6 +60,64 @@ def synth_task_prompt(days: int, users: list[str]) -> str:
     )
 
 
+# ----------------------------------------------------------------------
+# Auto-deploy guard
+# ----------------------------------------------------------------------
+# A prompt_improvement's only schema check is Field(min_length=50), which does
+# NOT distinguish a complete standalone system prompt from a revision note or
+# fragment. A prior night auto-deployed a candidate that began "PROMPT REVISION
+# NOTE — apply as a drop-in replacement ... preserved verbatim ... change
+# nothing else" straight into homey's live current.txt, clobbering the real
+# prompt and blinding every later synthesis (get_agent_prompt then returned the
+# note, so the synthesizer could no longer read homey's real prompt to revise
+# it). Before auto-deploying, refuse any candidate shaped like a note/diff or
+# drastically shorter than the live prompt; such candidates are left STAGED for
+# manual approval instead of deployed, and flagged in the report email.
+
+_PROMPT_NOTE_MARKERS = (
+    "prompt revision note",
+    "drop-in replacement",
+    "insert the following",
+    "change nothing else",
+    "preserved verbatim",
+)
+# A "full replacement" that keeps less than this fraction of the live prompt's
+# length is almost certainly a fragment/note rather than a complete prompt.
+_MIN_PROMPT_LENGTH_RATIO = 0.5
+# Below this the live prompt is too short to give a reliable length baseline
+# (e.g. a brand-new agent), so the shrink check is skipped to avoid false trips.
+_PROMPT_BASELINE_MIN_CHARS = 400
+
+
+def _prompt_deploy_block_reason(current_prompt: str, new_prompt: str) -> str | None:
+    """Why a candidate must NOT be auto-deployed (else ``None``).
+
+    Guards the two shapes that have clobbered a live prompt: text that reads
+    like a revision note/diff rather than a standalone prompt, and a candidate
+    drastically shorter than the live prompt it would replace.
+    """
+    low = new_prompt.lower()
+    for marker in _PROMPT_NOTE_MARKERS:
+        if marker in low:
+            return f"candidate reads like a revision note, not a full prompt (contains {marker!r})"
+    baseline = len((current_prompt or "").strip())
+    if baseline >= _PROMPT_BASELINE_MIN_CHARS:
+        ratio = len(new_prompt.strip()) / baseline
+        if ratio < _MIN_PROMPT_LENGTH_RATIO:
+            return (f"candidate is {ratio:.0%} of the live prompt's length "
+                    f"(< {_MIN_PROMPT_LENGTH_RATIO:.0%}); likely a fragment, not a full prompt")
+    return None
+
+
+@dataclass(frozen=True)
+class _ApplyResult:
+    """Outcome of ``_apply_prompts``: how many deployed, and which were held."""
+
+    applied: int
+    # (user_id, slug, reason) for candidates the guard refused to auto-deploy.
+    staged_only: list[tuple[str, str, str]]
+
+
 @dataclass(frozen=True)
 class SynthOutcome:
     report: ImprovementReport | None
@@ -177,13 +235,13 @@ class ImprovementSynthesizer:
                 )
                 return SynthOutcome(report=None, staged_prompts=0,
                                     cost_usd=outcome.cost_usd, error=reason)
-            applied = await self._apply_prompts(report)
+            result = await self._apply_prompts(report)
             self._report_store.record(
                 summary=report.summary, report=report.model_dump(),
-                staged_prompts=applied, cost_usd=outcome.cost_usd,
+                staged_prompts=result.applied, cost_usd=outcome.cost_usd,
             )
-            self._send_report_email(report, applied)
-            return SynthOutcome(report=report, staged_prompts=applied,
+            self._send_report_email(report, result)
+            return SynthOutcome(report=report, staged_prompts=result.applied,
                                 cost_usd=outcome.cost_usd, error=None)
         finally:
             await client.aclose()
@@ -271,7 +329,7 @@ class ImprovementSynthesizer:
                 users.append(user_dir.name)
         return sorted(users)
 
-    async def _apply_prompts(self, report: ImprovementReport) -> int:
+    async def _apply_prompts(self, report: ImprovementReport) -> _ApplyResult:
         """Auto-apply each prompt improvement directly to the live agent (capped).
 
         Chosen behaviour (2026-08-12): synthesizer prompt proposals deploy
@@ -283,8 +341,15 @@ class ImprovementSynthesizer:
         pending — the same path the improver uses above its auto-deploy
         threshold. We stage first because that path approves a pending
         candidate.
+
+        A candidate that fails ``_prompt_deploy_block_reason`` (a revision
+        note/diff, or a drastic truncation of the live prompt) is NOT deployed:
+        it is left staged (pending) for manual approval in Settings and flagged
+        in the report email, so a malformed candidate can never again silently
+        clobber a live system prompt (see the homey incident above).
         """
         applied = 0
+        staged_only: list[tuple[str, str, str]] = []
         for pi in report.prompt_improvements[: self._max_prompt_candidates]:
             try:
                 state = await self._get_agent_state(pi.user_id, pi.slug)
@@ -292,26 +357,41 @@ class ImprovementSynthesizer:
                     log.warning("synthesizer: no agent state for %s/%s — skipping prompt",
                                 pi.user_id, pi.slug)
                     continue
+                try:
+                    current_prompt = state.get_current_prompt() or ""
+                except Exception:
+                    log.exception("synthesizer: could not read current prompt for %s/%s",
+                                  pi.user_id, pi.slug)
+                    current_prompt = ""
                 sha = hashlib.sha256(pi.new_prompt.encode()).hexdigest()[:12]
                 state.approval.stage(CandidatePrompt(
                     sha=sha, content=pi.new_prompt,
                     rationale=f"[nightly-synthesizer] {pi.rationale}",
                     score_delta=0.0,
                 ))
+                block = _prompt_deploy_block_reason(current_prompt, pi.new_prompt)
+                if block is not None:
+                    # Leave it staged (pending) rather than overwrite the live
+                    # prompt; a human approves it from Settings if it is real.
+                    log.warning(
+                        "synthesizer: NOT auto-deploying prompt for %s/%s — %s; "
+                        "left staged for manual approval", pi.user_id, pi.slug, block)
+                    staged_only.append((pi.user_id, pi.slug, block))
+                    continue
                 state.approve_candidate()  # deploy immediately to the live agent
                 applied += 1
                 log.info("synthesizer: auto-applied prompt for %s/%s (sha %s)", pi.user_id, pi.slug, sha)
             except Exception:
                 log.exception("synthesizer: auto-applying prompt for %s/%s failed",
                               pi.user_id, pi.slug)
-        return applied
+        return _ApplyResult(applied=applied, staged_only=staged_only)
 
     def _settings_link(self, slug: str, label: str) -> str:
         base = self._base_url.rstrip("/") if self._base_url else ""
         href = f"{base}/agents/{slug}" if base else f"/agents/{slug}"
         return f'<a href="{href}">{label}</a>'
 
-    def _send_report_email(self, report: ImprovementReport, applied: int) -> None:
+    def _send_report_email(self, report: ImprovementReport, result: "_ApplyResult") -> None:
         """Scannable digest: the summary + one-line titles + where to act.
 
         Deliberately terse — the full proposal bodies live where they are
@@ -328,9 +408,20 @@ class ImprovementSynthesizer:
                     for pi in report.prompt_improvements
                 )
                 lines.append(
-                    f"<p><strong>{applied} prompt(s) auto-applied</strong> — "
+                    f"<p><strong>{result.applied} prompt(s) auto-applied</strong> — "
                     f"review or roll back in Settings: {links}</p>"
                 )
+            if result.staged_only:
+                lines.append(
+                    f"<p><strong>⚠ {len(result.staged_only)} prompt(s) NOT auto-deployed</strong> — "
+                    f"they look like a revision note or a truncated prompt rather than a full "
+                    f"system prompt, and were left staged for manual approval in Settings:</p><ul>"
+                )
+                lines.extend(
+                    f"<li>{self._settings_link(slug, f'{uid}/{slug}')}: {reason}</li>"
+                    for uid, slug, reason in result.staged_only
+                )
+                lines.append("</ul>")
             if report.code_improvements:
                 lines.append(
                     f"<p><strong>{len(report.code_improvements)} code proposal(s)</strong> "
