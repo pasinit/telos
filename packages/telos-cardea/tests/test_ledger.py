@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from telos_cardea import ledger, routine
+from telos_cardea import ledger, routine, telos_api
 from telos_cardea._cardea import OperationContext, OperationRejected
 from telos_cardea.config import Config
 
@@ -98,6 +98,21 @@ async def test_token_file_is_reread_each_call(config: Config, make_context: Make
     token_file.write_text("rotated.token.value")
     await routine.routine_context({}, make_context(), config=config, client=recorder.client())
     assert [r.headers["Authorization"] for r in recorder.requests] == [f"Bearer {TOKEN}", "Bearer rotated.token.value"]
+
+
+async def test_routine_context_waits_for_the_recall_within_the_descriptor_timeout(config: Config, make_context: MakeContext) -> None:
+    # Telos waits up to 45 s for the reserved recall; the call allows more, and Cardea more again.
+    recorder = Recorder({
+        ("GET", "/internal/cardea/v1/routine-context"): httpx.Response(200, json=ROUTINE_CONTEXT),
+        ("GET", "/internal/cardea/v1/ledger"): httpx.Response(200, json={"items": [], "next_offset": None}),
+    })
+    await routine.routine_context({}, make_context(), config=config, client=recorder.client())
+    await ledger.list_({"limit": 5}, make_context(), config=config, client=recorder.client())
+    context_timeout, ledger_timeout = (request.extensions["timeout"]["read"] for request in recorder.requests)
+    assert context_timeout == routine.TIMEOUT_SECONDS > 45
+    assert load_descriptor("telos.routine_context").cardea.timeout_seconds > routine.TIMEOUT_SECONDS
+    # Other Telos calls keep the shared default.
+    assert ledger_timeout == telos_api.TIMEOUT_SECONDS == 30
 
 
 async def test_missing_agent_id_is_rejected(config: Config, make_context: MakeContext) -> None:

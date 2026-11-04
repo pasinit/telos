@@ -1,5 +1,6 @@
 """Internal Cardea API: JWT-SVID auth, agent scoping, routine context and the property ledger."""
 
+import ast
 import asyncio
 import dataclasses
 import json
@@ -9,6 +10,7 @@ import tempfile
 import time
 from concurrent import futures
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -20,7 +22,14 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from telos.api.internal_cardea import DEFAULT_ALLOWED_SUB, InternalApiDeps, InternalApiServer, create_internal_app, internal_api_from_env
+from telos.api.internal_cardea import (
+    DEFAULT_ALLOWED_SUB,
+    DEFAULT_RECALL_TIMEOUT,
+    InternalApiDeps,
+    InternalApiServer,
+    create_internal_app,
+    internal_api_from_env,
+)
 from telos.api.spiffe_auth import BundleUnavailableError, SvidVerifier, WorkloadApiKeys, decode_jwt_bundles
 from telos.cardea_bridge import BridgeConfig
 from telos.core.persistence import Database
@@ -598,6 +607,19 @@ def test_slow_recall_is_disclosed_not_waited_for(env):
     body = client.get("/internal/cardea/v1/routine-context", headers=auth()).json()
     assert time.monotonic() - started < 2
     assert "memory recall timed out after 0s" in body["reserved_recall"]
+
+
+def test_recall_timeout_fits_inside_the_cardea_call_timeouts():
+    # Cardea's descriptor deadline > telos-cardea's client timeout > Telos's recall timeout, so a slow
+    # recall is disclosed in the context rather than failing the call. telos-cardea has its own venv,
+    # so its constant is read from source.
+    package = Path(__file__).resolve().parents[1] / "packages" / "telos-cardea"
+    descriptor = json.loads((package / "descriptors" / "telos.routine_context.json").read_text())
+    module = ast.parse((package / "src" / "telos_cardea" / "routine.py").read_text())
+    client_timeout = next(node.value.value for node in module.body if isinstance(node, ast.Assign)
+                          and any(isinstance(t, ast.Name) and t.id == "TIMEOUT_SECONDS" for t in node.targets))
+    assert descriptor["cardea"]["timeout_seconds"] > client_timeout >= DEFAULT_RECALL_TIMEOUT + 5
+    assert InternalApiDeps.__dataclass_fields__["recall_timeout"].default == DEFAULT_RECALL_TIMEOUT == 45
 
 
 def test_failed_fetch_is_not_retried_by_every_caller(spire_agent):
