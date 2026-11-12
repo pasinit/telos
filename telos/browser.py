@@ -14,7 +14,11 @@ within one user message).
 
 All methods return a uniform dict:
   {ok: bool, url: str, title: str, content: str, interactive: list,
-   images: list[str], error: str}
+   images: list[str], rendered_empty: bool, error: str}
+
+``rendered_empty`` is True when the page loaded but rendered ~no extractable
+text while looking client-rendered (a JS app shell): the content is not a
+confirmed-empty page and must not be reported as one.
 
 The agent sees `content` (rendered text, capped) and `interactive` (top-N
 links and buttons) and uses the visible text as the click/fill target. The
@@ -25,6 +29,7 @@ the model can see photos alongside the text.
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
@@ -65,6 +70,25 @@ _TAIL_WAIT_MS = 1500
 _BROWSER_LAUNCH_MS = 30_000
 _BROWSER_LAUNCH_S = 35.0
 _BROWSER_WORK_S = 75.0
+
+# A client-rendered app serves an almost text-free shell and fills it in with JavaScript. When a
+# page loads but renders ~no visible text, that is NOT evidence of an empty page/inventory, so we
+# flag it instead of returning clean empty content — mirroring the HTTP-4xx "access denied ... not
+# empty results" messaging on the navigation path. Client-rendered career portals (e.g. BFI's
+# bfijobsandopportunities.bfi.org.uk) came back with ~0 chars and were wrongly reported as checked.
+_RENDERED_EMPTY_MAX_CHARS = 32
+_RENDERED_EMPTY_CAVEAT = ("No extractable text: the page is likely client-rendered (a JavaScript app shell) "
+                          "and was NOT verified as empty inventory.")
+_SPA_ROOT_RE = re.compile(r"""\bid\s*=\s*["']?(?:__next|__nuxt|root|app|q-app|svelte)\b"""
+                          r"""|\bng-app\b|\bdata-reactroot\b|\bdata-server-rendered\b""", re.IGNORECASE)
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def looks_client_rendered(html: str) -> bool:
+    """Heuristic: a known SPA mount root (#__next/#root/[ng-app]/…), or substantial ``<script>`` with no body text."""
+    if _SPA_ROOT_RE.search(html):
+        return True
+    return sum(len(match.group(1)) for match in _SCRIPT_RE.finditer(html)) >= 2000
 
 
 class BrowserSession:
@@ -245,7 +269,7 @@ class BrowserSession:
                 raise ValueError("Download did not produce a document")
             text = await extract_document(Path(path))
             self._document = {"ok": True, "url": download.url, "title": download.suggested_filename,
-                              "content": text, "interactive": [], "images": [], "error": ""}
+                              "content": text, "interactive": [], "images": [], "rendered_empty": False, "error": ""}
             self._snapshot = self._document
             return self._content_page(0)
         finally:
@@ -348,18 +372,27 @@ class BrowserSession:
         url = self._page.url
         title = await self._page.title()
         html = await self._page.content()
-        content = html_to_text(html, max_chars=MAX_DOCUMENT_CHARS)
+        base_content = html_to_text(html, max_chars=MAX_DOCUMENT_CHARS)
+        content = base_content
         interactive = await self._collect_interactive()
         # Site-specific enrichment. Same payload
         # the fetcher's web_fetch path appends, so browser flows see the
         # structured projection too.
+        enriched = False
         try:
             result = _enrich_known_site(url, html)
             if result is not None:
+                enriched = True
                 payload = json.dumps(result["data"], indent=2, ensure_ascii=False)
                 content = f"[{result['kind']}] {result['summary']}\n{payload}\n\n---\n{content}"
         except Exception as e:
             log.debug("adapter enrich in BrowserSession failed: %s", e)
+        # Distinguish an unhydrated SPA shell from a genuinely sparse page so the agent does not
+        # report a client-rendered source as a confirmed-empty negative finding.
+        rendered_empty = (not enriched and len(base_content.strip()) <= _RENDERED_EMPTY_MAX_CHARS
+                          and looks_client_rendered(html))
+        if rendered_empty:
+            content = f"[client-rendered] {_RENDERED_EMPTY_CAVEAT}\n\n---\n{content}"
         # Site-specific image selection keeps floorplans ahead of gallery photos.
         images: list[str] = []
         try:
@@ -379,6 +412,7 @@ class BrowserSession:
             "content": content,
             "interactive": interactive,
             "images": images,
+            "rendered_empty": rendered_empty,
             "error": "",
         }
         return self._content_page(0)
@@ -479,6 +513,7 @@ class BrowserSession:
             "content": "",
             "interactive": [],
             "images": [],
+            "rendered_empty": False,
             "error": msg,
         }
 
