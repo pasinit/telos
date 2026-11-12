@@ -149,6 +149,34 @@ def make_agent(tmp_path) -> Agent:
     return Agent(goal, user_id="test_user", storage_root=tmp_path)
 
 
+def _agent_with_tools(tmp_path, tools):
+    return Agent(Goal(name="g", description="d"), user_id="u", storage_root=tmp_path, tools=tools)
+
+
+def test_has_runnable_native_tools_true_for_built_in_tool(tmp_path):
+    assert _agent_with_tools(tmp_path, ["web_search", "browser_open"]).has_runnable_native_tools()
+
+
+def test_has_runnable_native_tools_true_for_no_whitelist(tmp_path):
+    # None (every tool enabled) and an empty list (tool-less chat agent) have no
+    # "required but missing" tool, so neither is blocked.
+    assert _agent_with_tools(tmp_path, None).has_runnable_native_tools()
+    assert _agent_with_tools(tmp_path, []).has_runnable_native_tools()
+
+
+def test_has_runnable_native_tools_true_for_mcp_server_entry(tmp_path):
+    # A surviving ``mcp:`` whitelist entry denotes a connected server.
+    assert _agent_with_tools(tmp_path, ["mcp:filesystem"]).has_runnable_native_tools()
+
+
+def test_has_runnable_native_tools_false_for_cardea_only_tools(tmp_path):
+    # The memory-steward: every declared tool is a Cardea-only operation with no
+    # in-process implementation, so a native run is a guaranteed no-op.
+    from telos.services.memory_reconcile import TOOLS
+
+    assert not _agent_with_tools(tmp_path, list(TOOLS)).has_runnable_native_tools()
+
+
 async def _collect(agent: Agent, message: str, frames: list[tuple[str, dict]]) -> str:
     with patch(
         "telos.services.agent_runtime_v2.stream_task_events",

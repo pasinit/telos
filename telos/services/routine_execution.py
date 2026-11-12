@@ -159,6 +159,29 @@ class RoutineExecutor:
         if recall is not None:
             message += "\n\n" + reserved_recall_block(recall)
         agent = await self._agent_runtime.get(user_id, agent_slug)
+        # Pre-flight: a routine agent whose entire tool whitelist resolves to
+        # operations that only exist in another runtime (the memory-steward's
+        # ``memory_reconcile_*`` Cardea operations) would stream here with zero
+        # callable tools — a guaranteed no-op. It still emits a non-empty
+        # 'BLOCKED' summary, which clears the ``empty_output`` guard and so gets
+        # logged as a *successful* run and re-extracted into the memory store
+        # (the dominant driver of cross-user store bloat). Skip the no-op run
+        # instead: surface it as a non-retryable failure so ``RoutineRunner``
+        # records it as failed (never persisting the BLOCKED text as a result),
+        # the FAILURE-notice path fires for routines that email, and the outage
+        # is logged for the operator rather than silently absorbed.
+        has_tools = getattr(agent, "has_runnable_native_tools", None)
+        if has_tools is not None and not has_tools():
+            declared = getattr(agent, "tools_list", None)
+            self._record(user_id, agent_slug, "turn_blocked", {
+                "reason": "tools_unavailable", "declared_tools": list(declared or []),
+            })
+            log.error(
+                "routine agent %s/%s has no tool runnable on telos's native runtime "
+                "(declared=%s) — skipping the guaranteed no-op run",
+                user_id, agent_slug, declared,
+            )
+            raise RoutineStreamError("tools_unavailable", "")
         ctx = self._agent_runtime.make_context(user_id, is_routine=True)
         chunks: list[str] = []
         stream_error: dict[str, Any] | None = None

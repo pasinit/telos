@@ -78,6 +78,55 @@ def _routine(notify_email: bool = True) -> SimpleNamespace:
     return SimpleNamespace(id="r1", name="Daily brief", notify_email=notify_email)
 
 
+class _ToollessAgent:
+    """A routine agent with a non-empty whitelist, none of which the native
+    runtime can run (the memory-steward's Cardea-only ``memory_reconcile_*``).
+
+    ``astream`` raises if reached, so a test can assert the no-op run is skipped
+    before the stream is ever opened.
+    """
+
+    def __init__(self, declared: list[str]) -> None:
+        self.tools_list = declared
+        self.streamed = False
+
+    def has_runnable_native_tools(self) -> bool:
+        return False
+
+    async def astream(self, message: str, ctx: Any) -> AsyncIterator[tuple[str, Any]]:
+        self.streamed = True
+        raise AssertionError("astream must not run for a tool-less routine agent")
+        yield  # pragma: no cover — unreachable, makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_execute_skips_agent_with_no_native_tools():
+    # memory-steward run on the native fallback path: every declared tool is a
+    # Cardea-only operation, so the native run is a guaranteed no-op. It must be
+    # skipped (not streamed) and surfaced as a non-retryable failure rather than
+    # returning a 'BLOCKED' summary that would be logged as a successful run.
+    agent = _ToollessAgent(["memory_reconcile_candidates", "memory_reconcile_apply"])
+    with pytest.raises(RoutineStreamError) as exc_info:
+        await _executor(agent).execute("u", "memory-steward", "go")
+    assert exc_info.value.reason == "tools_unavailable"
+    assert agent.streamed is False
+    assert not routine_execution._is_retryable_stream_error(exc_info.value.reason)
+
+
+@pytest.mark.asyncio
+async def test_toolless_agent_run_emails_failure_and_is_not_retried():
+    agent = _ToollessAgent(["memory_reconcile_candidates"])
+    email_service = MagicMock()
+    executor = _executor(agent, email_service)
+
+    with pytest.raises(RoutineStreamError):
+        await executor.execute_with_email("u", "memory-steward", "go", _routine())
+
+    assert agent.streamed is False
+    kwargs = email_service.send_routine_notification.call_args.kwargs
+    assert "FAILED" in kwargs["subject"]
+
+
 @pytest.mark.asyncio
 async def test_execute_joins_text_events():
     agent = _FakeAgent([

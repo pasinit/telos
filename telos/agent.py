@@ -995,6 +995,32 @@ class Agent:
     def tools_list(self, value: list[str] | None) -> None:
         self._tools = value
 
+    def has_runnable_native_tools(self) -> bool:
+        """Whether this agent could call at least one tool on telos's own
+        (in-process) runtime.
+
+        A whitelist of ``None`` (every tool enabled) or an empty list (a
+        deliberately tool-less chat agent) both count as runnable — there is no
+        "required but missing" tool to block on. A *non-empty* whitelist whose
+        every entry resolves to no in-process tool returns ``False``: running it
+        natively is a guaranteed no-op. This is the memory-steward's failure
+        mode — its ``memory_reconcile_*`` tools exist only as Cardea operations
+        (see ``telos/services/memory_reconcile.py`` and ``telos/cardea_bridge.py``),
+        so when telos falls back to running that routine itself the agent streams
+        with zero callable tools and emits a non-empty 'BLOCKED' summary that is
+        then logged as a successful run and re-extracted into the memory store.
+
+        A tool is runnable when it is a built/registered tool (a ``_tool_set``
+        key — which includes any MCP tools connected via ``set_mcp``) or a
+        surviving ``mcp:`` whitelist entry: a failed MCP connection is pruned
+        from ``tools_list`` by ``AgentRuntime._attach_mcp``, so a remaining
+        ``mcp:`` entry denotes a server that did connect.
+        """
+        declared = self._tools
+        if not declared:
+            return True
+        return any(name in self._tool_set or name.startswith("mcp:") for name in declared)
+
     def append_user_context(self, message: str) -> None:
         """Add a system-style message to history (for routine activate/dismiss/delete notifications)."""
         self._history.append({"role": "user", "content": message})
