@@ -83,9 +83,15 @@ class _FakeApproval:
 
 
 class _FakeState:
-    def __init__(self) -> None:
+    def __init__(self, current_prompt: str = "old prompt") -> None:
         self.approval = _FakeApproval()
         self.applied = 0
+        self._current_prompt = current_prompt
+
+    def get_current_prompt(self) -> str:
+        # Mirrors AgentImprovementState.get_current_prompt — what the deploy
+        # guard reads to detect a note/truncation before overwriting it.
+        return self._current_prompt
 
     def approve_candidate(self) -> None:
         # Mirrors Agent.approve(): deploy the currently-staged candidate.
@@ -202,6 +208,66 @@ async def test_synthesizer_caps_and_skips_unknown_agents(env) -> None:
     outcome = await synth.run()
     # cap=3 entries considered; 'ghost' skipped -> 2 staged
     assert outcome.staged_prompts == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Auto-deploy guard — a note/diff or truncated candidate must NOT clobber the
+# live prompt (the homey "PROMPT REVISION NOTE" incident). It is staged for
+# manual approval and flagged, never deployed.
+# ──────────────────────────────────────────────────────────────────────
+
+def test_prompt_deploy_block_reason_flags_notes_and_truncation() -> None:
+    from telos.services.nightly.synthesizer import _prompt_deploy_block_reason
+
+    full = "You are Homey, a property assistant. Be precise and never confabulate. " * 20
+    # A complete, similar-length revision deploys (no block).
+    assert _prompt_deploy_block_reason(full, full + " Added one new subsection.") is None
+    # The exact homey failure shape: a revision note, blocked even when long.
+    note = ("PROMPT REVISION NOTE — apply as a drop-in replacement for the current homey "
+            "system prompt, which is preserved verbatim with exactly ONE new subsection "
+            "added. Insert the following subsection verbatim; change nothing else. " * 2)
+    assert _prompt_deploy_block_reason(full, note) is not None
+    # A drastic truncation of a substantial live prompt is blocked.
+    assert _prompt_deploy_block_reason(full, "You are Homey. Be nice to the user at all times.") is not None
+    # No reliable baseline (short/new agent) => the length check is skipped.
+    assert _prompt_deploy_block_reason("tiny", "You are a brand new agent, be helpful. " * 2) is None
+
+
+async def test_note_shaped_prompt_is_staged_not_auto_deployed(env) -> None:
+    make_synth, states, reports, emails = env
+    note = ("PROMPT REVISION NOTE — apply as a drop-in replacement; the current prompt is "
+            "preserved verbatim. Insert the following subsection verbatim; change nothing "
+            "else. Add an anti-confabulation clause to Section 7.")
+    report = {**REPORT, "prompt_improvements": [
+        {"user_id": "dana", "slug": "jobber", "new_prompt": note, "rationale": "note incident"}]}
+    synth = make_synth(_ScriptedAnalyst(report=report, exercise_repo=False))
+    outcome = await synth.run()
+
+    # Not deployed to the live agent...
+    assert outcome.staged_prompts == 0
+    st = states[("dana", "jobber")]
+    assert st.applied == 0
+    # ...but staged (pending) so a human can approve it from Settings...
+    assert len(st.approval.staged) == 1
+    # ...and the email flags it as held back, not applied.
+    _, _, body = emails[0]
+    assert "NOT auto-deployed" in body
+    assert reports.list_reports()[0]["staged_prompts"] == 0
+
+
+async def test_drastic_truncation_prompt_is_staged_not_deployed(env) -> None:
+    make_synth, states, reports, emails = env
+    # Substantial live prompt -> a tiny "full" candidate is a truncation.
+    states[("dana", "jobber")] = _FakeState(current_prompt="You are Jobber. Be precise. " * 100)
+    short_full = "You are Jobber. Apply to roles and never claim a submission that is not in memory."
+    report = {**REPORT, "prompt_improvements": [
+        {"user_id": "dana", "slug": "jobber", "new_prompt": short_full, "rationale": "truncation"}]}
+    synth = make_synth(_ScriptedAnalyst(report=report, exercise_repo=False))
+    outcome = await synth.run()
+
+    assert outcome.staged_prompts == 0
+    assert states[("dana", "jobber")].applied == 0
+    assert len(states[("dana", "jobber")].approval.staged) == 1
 
 
 # ──────────────────────────────────────────────────────────────────────
