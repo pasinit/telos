@@ -55,6 +55,15 @@ def test_rightmove_url_matches_telos() -> None:
     assert url == "https://www.rightmove.co.uk/property-to-rent/Brixton-Hill.html?includeLetAgreed=false&minBedrooms=2&maxPrice=600000"
 
 
+def test_possessive_place_names_do_not_split_on_the_apostrophe() -> None:
+    # "King's Cross" is "Kings-Cross" on the portals; splitting on the apostrophe yields the
+    # 404 slugs "king-s-cross"/"King-s-Cross" (homey's recurring "no recognised results").
+    assert listings.rightmove_url("King's Cross") == "https://www.rightmove.co.uk/property-for-sale/Kings-Cross.html"
+    assert listings.rightmove_url("King’s Cross") == "https://www.rightmove.co.uk/property-for-sale/Kings-Cross.html"
+    assert listings.onthemarket_url("King's Cross").startswith(
+        "https://www.onthemarket.com/for-sale/property/kings-cross/")
+
+
 @pytest.mark.parametrize(("location", "paths"), [
     ("SW2", ["sw2"]),
     ("Notting Hill, London", ["london/notting-hill"]),
