@@ -21,9 +21,10 @@ dependencies = [
 [project.optional-dependencies]
 # Free web search (DDGS: Bing, Brave, DuckDuckGo, Yahoo).
 search = ["ddgs>=7.0"]
-# Headless Chromium for browser.* and the listing fetch fallback.
+# Headless Chromium for browser.* and the listing fetch fallback, plus
+# text-only extraction of download-only PDF/ODT job packs (telos_cardea.documents).
 # Confined-worker profile only; run `patchright install chromium` after installing.
-browser = ["patchright"]
+browser = ["patchright", "pymupdf>=1.24"]
 
 [project.entry-points."cardea.operations"]
 "mail.send" = "telos_cardea.mail:send"

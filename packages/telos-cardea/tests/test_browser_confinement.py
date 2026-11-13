@@ -145,13 +145,42 @@ class FakeLocator:
         return self.elements
 
 
+class FakeDownload:
+    """A patchright Download: navigation to an attachment aborts goto and emits this."""
+
+    def __init__(self, url: str, suggested_filename: str, path: str) -> None:
+        self.url = url
+        self.suggested_filename = suggested_filename
+        self._path = path
+        self.cancelled = False
+        self.deleted = False
+
+    async def path(self) -> str:
+        return self._path
+
+    async def cancel(self) -> None:
+        self.cancelled = True
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+
 class FakePage:
     def __init__(self, world: "World") -> None:
         self.world = world
         self.url = ""
         self.clicked: list[str] = []
+        self._handlers: dict[str, list[Any]] = {}
+
+    def on(self, event: str, handler: Any) -> None:
+        self._handlers.setdefault(event, []).append(handler)
 
     async def goto(self, url: str, wait_until: str, timeout: int) -> Any:
+        if self.world.download is not None:
+            # A download-only URL aborts the navigation after firing the event.
+            for handler in self._handlers.get("download", []):
+                handler(self.world.download)
+            raise RuntimeError("Page.goto: Download is starting")
         if self.world.goto_error:
             raise RuntimeError(self.world.goto_error)
         self.url = url
@@ -224,6 +253,7 @@ class World:
         self.goto_error = ""
         self.challenge_clears = True
         self.buttons: list[dict[str, Any]] = []
+        self.download: FakeDownload | None = None
 
     def async_playwright(self) -> Any:
         world = self
@@ -323,3 +353,58 @@ async def test_plain_403_is_still_rejected(world: World, make_context: MakeConte
     world.status, world.headers = 403, {"server": "cloudflare"}
     with pytest.raises(OperationRejected, match="HTTP 403"):
         await browser.open_page({"url": "https://www.zoopla.co.uk/"}, make_context())
+
+
+async def test_open_reads_download_only_job_pack(world: World, make_context: MakeContext,
+                                                 monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    # Navigating straight to a PDF aborts goto with "Download is starting"; the
+    # download is text-extracted and returned as content instead of rejected.
+    pdf = tmp_path / "head-of-casework-jd.pdf"
+    pdf.write_bytes(b"%PDF-1.7 unread by the fake extractor")
+    world.download = FakeDownload("https://kalayaan.example/jd.pdf", "head-of-casework-jd.pdf", str(pdf))
+
+    async def fake_extract(path: Any) -> str:
+        assert str(path) == str(pdf)
+        return "Head of Casework. Essential: OISC Level 3 regulated adviser. " * 20
+
+    monkeypatch.setattr("telos_cardea._vendor.documents.extract_document", fake_extract)
+    output = await browser.open_page({"url": "https://kalayaan.example/jd.pdf"}, make_context())
+    assert_output("browser.open", output)
+    assert output["title"] == "head-of-casework-jd.pdf"
+    assert output["url"] == "https://kalayaan.example/jd.pdf"
+    assert "OISC Level 3" in output["content"]
+    assert output["interactive"] == []
+    assert world.download is not None and world.download.cancelled and world.download.deleted
+
+
+async def test_open_download_offset_pages_through_extracted_text(world: World, make_context: MakeContext,
+                                                                 monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    pdf = tmp_path / "pack.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    world.download = FakeDownload("https://host.example/pack.pdf", "pack.pdf", str(pdf))
+    body = "".join(f"line {n}\n" for n in range(5000))
+
+    async def fake_extract(path: Any) -> str:
+        return body
+
+    monkeypatch.setattr("telos_cardea._vendor.documents.extract_document", fake_extract)
+    first = await browser.open_page({"url": "https://host.example/pack.pdf"}, make_context())
+    assert first["total_chars"] == len(body)
+    assert first["next_offset"] and first["next_offset"] > 0
+    second = await browser.open_page({"url": "https://host.example/pack.pdf", "offset": first["next_offset"]}, make_context())
+    assert second["content"] and second["content"] != first["content"]
+
+
+async def test_open_download_extraction_failure_is_rejected(world: World, make_context: MakeContext,
+                                                            monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    pdf = tmp_path / "scanned.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    world.download = FakeDownload("https://host.example/scanned.pdf", "scanned.pdf", str(pdf))
+
+    async def fake_extract(path: Any) -> str:
+        raise ValueError("PDF contains no extractable text; scanned pages require OCR")
+
+    monkeypatch.setattr("telos_cardea._vendor.documents.extract_document", fake_extract)
+    with pytest.raises(OperationRejected, match="scanned"):
+        await browser.open_page({"url": "https://host.example/scanned.pdf"}, make_context())
+    assert world.download is not None and world.download.cancelled and world.download.deleted

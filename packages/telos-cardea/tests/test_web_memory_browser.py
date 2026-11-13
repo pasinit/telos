@@ -208,7 +208,7 @@ class FakePage:
 
 @pytest.fixture
 def fake_browser(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def with_page(url: str, action: Any) -> Any:
+    async def with_page(url: str, action: Any, on_download: Any = None) -> Any:
         return await action(FakePage(url))
 
     monkeypatch.setattr(browser, "_with_page", with_page)
