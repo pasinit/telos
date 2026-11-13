@@ -375,8 +375,10 @@ reason instead of failing, so the agent never reads the gap as zero inventory.
   configured mapping from Cardea (namespace, agent) to Recordatio scope, and for `ledger.*` by Telos's own
   mapping of the `X-Cardea-*` headers. `RecordatioFeedbackClient` is inlined as one httpx call.
 - The per-turn `BrowserSession` is replaced by stateless calls, so `browser.click` takes a `url`.
-  Popups, downloads (PDF and ODT extraction), `browser_fill`, `browser_read` and `browser_back` are not
-  packaged.
+  Popups, `browser_fill`, `browser_read` and `browser_back` are not packaged. A `browser.open`
+  navigation that triggers a download (a PDF or ODT served `Content-Disposition: attachment`) is read:
+  the file is text-extracted via `telos_cardea._vendor.documents` (text-only PDF/ODT, vendored from Telos) and
+  returned as the page `content`, then cancelled and deleted. Needs the `[browser]` extra's `pymupdf`.
 - The `telos.transport.search` engines are re-implemented for Serper, SerpAPI and DDGS. Gemini grounding
   (which needs `google-genai`) is not packaged, and `SEARCH_ENGINE=gemini` uses the free path.
 - `property_candidates` stays in Telos, bound to its SQLite repository. The `ledger.*` operations reach it through

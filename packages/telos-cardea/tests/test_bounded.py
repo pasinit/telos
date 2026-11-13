@@ -58,7 +58,7 @@ async def test_oversize_browser_page_shortens_content_and_keeps_paging(make_cont
     page = FakePage("https://example.com/")
     page.html = f"<html><main><p>{text}</p></main></html>"
 
-    async def with_page(url: str, action: Any) -> Any:
+    async def with_page(url: str, action: Any, on_download: Any = None) -> Any:
         return await action(page)
 
     monkeypatch.setattr(browser, "_with_page", with_page)

@@ -6,8 +6,12 @@ Requires the ``browser`` extra plus ``patchright install chromium``.
 
 Telos's ``BrowserSession`` keeps one page alive across a turn. Cardea operations
 are independent receipted calls, so these are stateless: ``browser.click``
-re-opens ``url`` and then clicks ``target`` on it. Cookies, form state, popups
-and downloads (PDF extraction) do not carry over and are not supported.
+re-opens ``url`` and then clicks ``target`` on it. Cookies, form state and popups
+do not carry over. A navigation that triggers a download (a PDF or ODT job pack
+served ``Content-Disposition: attachment``) is read: the file is text-extracted
+via :mod:`telos_cardea._vendor.documents` and returned as the page ``content``, then
+cancelled and deleted. The worker's private ``/tmp`` holds the file while it is
+read; nothing persists across the call.
 
 Read-only at the network level: service workers are blocked, every request other
 than GET/HEAD is aborted (except Cloudflare's challenge endpoints, which a visitor
@@ -25,6 +29,8 @@ import ipaddress
 import logging
 import os
 import socket
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -43,6 +49,7 @@ WORK_S = 75.0
 CHALLENGE_WAIT_S = 25.0
 CHALLENGE_POLL_S = 1.0
 CLOSE_S = 10.0
+DOWNLOAD_S = 30.0
 
 _COLLECT_JS = """
 () => {
@@ -221,7 +228,7 @@ async def new_read_only_context(browser: Any) -> Any:
     return context
 
 
-async def _with_page(url: str, action: Any) -> Any:
+async def _with_page(url: str, action: Any, on_download: Callable[[Any], Awaitable[Any]] | None = None) -> Any:
     try:
         from patchright.async_api import async_playwright
     except ImportError as error:
@@ -232,12 +239,29 @@ async def _with_page(url: str, action: Any) -> Any:
             async def work() -> Any:
                 context = await new_read_only_context(browser)
                 page = await context.new_page()
+                # A download-only URL (Content-Disposition: attachment) aborts
+                # page.goto; its download event, not a response, carries the file.
+                downloads: list[Any] = []
+                download_ready = asyncio.Event()
+                if on_download is not None:
+                    def note_download(download: Any) -> None:
+                        downloads.append(download)
+                        download_ready.set()
+
+                    page.on("download", note_download)
                 try:
                     response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
                 except Exception as error:
+                    if on_download is not None:
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(download_ready.wait(), timeout=1)
+                        if downloads:
+                            return await on_download(downloads[-1])
                     # Behind the proxy, a host outside the allow-list fails here (ERR_TUNNEL_CONNECTION_FAILED).
                     detail = str(error).strip().splitlines()[0][:200] if str(error).strip() else type(error).__name__
                     raise OperationRejected(f"could not open {url}: {detail}") from None
+                if on_download is not None and downloads:
+                    return await on_download(downloads[-1])
                 if response is not None and response.status >= 400:
                     if is_challenge(response.status, response.headers):
                         await _pass_challenge(page, url)
@@ -298,6 +322,45 @@ async def _capture(page: Any, offset: int = 0) -> Output:
     return fitted
 
 
+async def _read_download(download: Any, offset: int = 0) -> Output:
+    """Text-extract a download (PDF/ODT) and return it in the ``browser.open`` shape.
+
+    The native ``BrowserSession`` caches the extracted document and pages through
+    it across calls; Cardea is stateless, so each ``browser.open`` re-downloads
+    and ``offset`` slices the freshly extracted text.
+    """
+    from telos_cardea._vendor.documents import extract_document
+
+    try:
+        path = await asyncio.wait_for(download.path(), timeout=DOWNLOAD_S)
+        if path is None:
+            raise OperationRejected(f"could not read download from {download.url}: no file was produced")
+        try:
+            text = await extract_document(Path(path))
+        except Exception as error:
+            detail = str(error).strip().splitlines()[0][:200] if str(error).strip() else type(error).__name__
+            name = download.suggested_filename or download.url
+            raise OperationRejected(f"could not extract {name}: {detail}") from None
+    finally:
+        with contextlib.suppress(Exception):
+            await download.cancel()
+            await download.delete()
+    end = min(offset + MAX_CONTENT_CHARS, len(text))
+    out: Output = {
+        "url": download.url,
+        "title": download.suggested_filename or download.url,
+        "content": text[offset:end],
+        "interactive": [],
+        "total_chars": len(text),
+        "next_offset": end if end < len(text) else None,
+    }
+    fitted, trimmed = fit(out, ("text", "content"))
+    if "content" in trimmed:
+        fitted["content"] = fitted["content"].removesuffix(TRUNCATION_MARK)
+        fitted["next_offset"] = offset + len(fitted["content"])
+    return fitted
+
+
 async def render(url: str) -> str:
     """Rendered HTML of ``url`` (the listing fetcher's opt-in browser fallback)."""
     if is_private_url(url):
@@ -319,7 +382,7 @@ async def open_page(arguments: Arguments, context: OperationContext) -> Output:
     async def capture(page: Any) -> Output:
         return await _capture(page, offset)
 
-    result: Output = await _with_page(url, capture)
+    result: Output = await _with_page(url, capture, on_download=lambda download: _read_download(download, offset))
     return result
 
 
