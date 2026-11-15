@@ -82,6 +82,7 @@ from telos.services.nightly import (
 )
 from telos.services.nightly.implementer import ImplementerReportStore, NightlyImplementer
 from telos.services.nightly.synthesizer import ImprovementSynthesizer, SynthReportStore
+from telos.services.prompt_integrity import scan_and_repair as _scan_prompt_integrity
 from telos.services.routine_context import RecentRuns
 from telos.services.routine_recall import RoutineRecall
 from telos.transport.sandbox import SandboxRunner
@@ -439,6 +440,22 @@ async def lifespan(app: FastAPI):
     """
     if init_tracing(settings.otel_exporter_otlp_endpoint, settings.otel_service_name):
         FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
+    # One-time repair of any agent whose live system prompt (``current.txt``)
+    # was corrupted by a past auto-deploy of a revision-note/truncated candidate
+    # (see telos.services.prompt_integrity). Runs before any agent is built, so
+    # the healed file is what ``_agent_prompt`` serves. Prevention at deploy time
+    # is handled separately; this only heals files already damaged.
+    try:
+        repairs = _scan_prompt_integrity(
+            settings.storage_root,
+            alert=_email_service.send_routine_notification,
+            operator_email=settings.nightly_feedback_owner_email or None,
+        )
+        if repairs:
+            log.warning("prompt-integrity: detected %d corrupted live prompt(s) at startup "
+                        "(%d reverted)", len(repairs), sum(1 for r in repairs if r.reverted_to_sha))
+    except Exception:
+        log.exception("prompt-integrity: startup scan failed")
     bridge = _cardea_bridge()
     runner = RoutineRunner(
         _routine_store,
