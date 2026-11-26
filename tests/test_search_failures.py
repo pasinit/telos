@@ -39,6 +39,25 @@ async def test_ddg_network_timeout_is_explicit(monkeypatch):
     assert not (await DuckDuckGoSearch().search('property'))[1]
 
 
+async def test_ddg_off_topic_results_are_dropped_not_surfaced(monkeypatch):
+    # Backend returns only hits that share zero query terms (production spam):
+    # must be reported as missing coverage, never joined into the result text.
+    spam = [{'title': 'Cheap apartments for rent', 'href': 'https://listings.example/flat', 'body': '2 bed flat'},
+            {'title': 'Windows power settings', 'href': 'https://support.example/power', 'body': 'sleep mode'}]
+    monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(lambda query, backend: spam))
+    text, error = await DuckDuckGoSearch(backends=('bing',)).search('embassy vacancies London')
+    assert not error and 'No usable results' in text
+    assert 'apartments' not in text and 'power settings' not in text
+
+
+def test_topically_relevant_keeps_only_query_term_overlap():
+    results = [{'title': 'Windows power settings', 'href': 'https://support.example/p', 'body': 'sleep mode'},
+               {'title': 'Embassy vacancies', 'href': 'https://fr.example/jobs', 'body': 'apply now'}]
+    assert duckduckgo.topically_relevant('embassy vacancies London', results) == [results[1]]
+    # A query with no usable (non-stopword, non-site:) terms cannot be judged: keep all.
+    assert duckduckgo.topically_relevant('site:fr.example', results) == results
+
+
 async def test_gemini_uses_worker_timeout_and_closes_client(monkeypatch):
     monkeypatch.setenv('GOOGLE_API_KEY', 'test')
     main_thread = threading.get_ident()

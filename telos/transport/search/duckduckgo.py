@@ -11,6 +11,40 @@ from ddgs.exceptions import DDGSException
 
 log = logging.getLogger(__name__)
 
+# Query words carrying no topic (ignored when checking relevance).
+_STOPWORDS = frozenset({
+    'a', 'about', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'best', 'by',
+    'for', 'from', 'how', 'in', 'into', 'is', 'it', 'its', 'latest', 'list',
+    'my', 'near', 'new', 'of', 'on', 'or', 'the', 'their', 'to', 'top', 'up',
+    'vs', 'was', 'what', 'when', 'where', 'which', 'who', 'will', 'with',
+    'within', 'you', 'your',
+})
+_QUERY_TOKEN = re.compile(r'[a-z0-9]+')
+
+
+def _query_terms(query: str) -> set[str]:
+    """Non-stopword tokens of the query, excluding ``site:`` restriction operands."""
+    cleaned = re.sub(r'(?<![\w:-])-?site:[^\s)]+', ' ', query, flags=re.IGNORECASE)
+    return {t for t in _QUERY_TOKEN.findall(cleaned.lower()) if t not in _STOPWORDS}
+
+
+def topically_relevant(query: str, results: list[dict]) -> list[dict]:
+    """Keep only results whose title+snippet share at least one query term.
+
+    Conservative: a result is dropped only when it shares *zero* query terms
+    (the off-topic backend spam seen in production). When the query has no usable
+    terms (e.g. a bare ``site:`` restriction) every result is kept.
+    """
+    terms = _query_terms(query)
+    if not terms:
+        return results
+    kept = []
+    for result in results:
+        text = f"{result.get('title', '')} {result.get('body', '')}".lower()
+        if terms & set(_QUERY_TOKEN.findall(text)):
+            kept.append(result)
+    return kept
+
 
 class DuckDuckGoSearch:
     """Legacy duckduckgo provider name; DDGS can query multiple engines."""
@@ -48,8 +82,13 @@ class DuckDuckGoSearch:
                     empty = True
                     continue
                 usable = filter_results(query, results)
+                relevant = topically_relevant(query, usable)
+                if relevant:
+                    return "\n\n".join(f"{r.get('title', '')}\n{r['href']}\n{r.get('body', '')}" for r in relevant[:5]), False
                 if usable:
-                    return "\n\n".join(f"{r.get('title', '')}\n{r['href']}\n{r.get('body', '')}" for r in usable[:5]), False
+                    # Reached the backend but every hit was off-topic spam; this is
+                    # missing coverage, not an empty inventory.
+                    empty = True
             if empty:
                 return "No usable results returned by the checked search backends; coverage may be incomplete.", False
             return "Web search unavailable: backends failed, are cooling down, or returned only unusable results. This is not empty inventory.", True

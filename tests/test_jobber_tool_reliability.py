@@ -87,7 +87,7 @@ async def test_search_tries_independent_backend_after_failure(monkeypatch):
         calls.append(backend)
         if backend == 'bing':
             raise RuntimeError('backend down')
-        return [{'href': 'https://example.org/job', 'title': 'Software Engineer'}]
+        return [{'href': 'https://example.org/job', 'title': 'Software Engineer', 'body': query}]
     monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(search))
     monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
     engine = DuckDuckGoSearch()
@@ -111,7 +111,7 @@ async def test_query_specific_no_results_does_not_disable_provider(monkeypatch):
         calls.append((query, backend))
         if query == 'first' and backend != 'yahoo':
             raise DDGSException('No results found.')
-        return [{'href': 'https://example.org/job', 'title': 'Software Engineer'}]
+        return [{'href': 'https://example.org/job', 'title': 'Software Engineer', 'body': query}]
     monkeypatch.setattr(DuckDuckGoSearch, '_search_sync', staticmethod(search))
     monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
     engine = DuckDuckGoSearch()

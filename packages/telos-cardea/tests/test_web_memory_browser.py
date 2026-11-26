@@ -34,12 +34,12 @@ async def test_serper_results(config: Config, make_context: MakeContext) -> None
 
 async def test_serper_failure_falls_back_to_free_search(config: Config, make_context: MakeContext, monkeypatch: pytest.MonkeyPatch) -> None:
     hits = [{"title": "Ad", "href": "https://www.bing.com/aclick?x", "body": ""},
-            {"title": "Real", "href": "https://rightmove.co.uk/p/1", "body": "snip"}]
+            {"title": "Real", "href": "https://rightmove.co.uk/p/1", "body": "flat to let"}]
     monkeypatch.setattr(web, "_ddgs", lambda query, backend: hits)
     client = mock_client(lambda request: httpx.Response(400, json={"message": "Not enough credits"}))
     output = await web.search({"query": "flat"}, make_context(), config=config, client=client)
     assert output["engine"] == "duckduckgo"
-    assert output["results"] == [{"title": "Real", "url": "https://rightmove.co.uk/p/1", "snippet": "snip"}]
+    assert output["results"] == [{"title": "Real", "url": "https://rightmove.co.uk/p/1", "snippet": "flat to let"}]
     assert_output("web.search", output)
 
 
@@ -57,6 +57,28 @@ def test_site_restrictions_are_enforced() -> None:
     results = [{"href": "https://www.foxtons.co.uk/a"}, {"href": "https://other.com/b"}]
     assert web.filter_results("flats site:foxtons.co.uk", results) == [results[0]]
     assert web.filter_results("flats -site:foxtons.co.uk", results) == [results[1]]
+
+
+async def test_off_topic_backend_spam_is_not_surfaced(config: Config, make_context: MakeContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A backend whose only hits share zero query terms (the production spam:
+    # apartment listings, Amazon/Reddit threads) must be treated as no results,
+    # not returned as legitimate coverage.
+    spam = [{"title": "Cheap apartments for rent", "href": "https://listings.example/flat", "body": "2 bed flat, parking"},
+            {"title": "Windows power settings guide", "href": "https://support.example/power", "body": "sleep mode"}]
+    monkeypatch.setattr(web, "_ddgs", lambda query, backend: spam)
+    output = await web.search({"query": "embassy vacancies London jobber"}, make_context(), config=replace(config, search_engine="bing"))
+    assert output["status"] == "no_results" and output["results"] == []
+    assert_output("web.search", output)
+
+
+async def test_topically_relevant_hits_are_kept(config: Config, make_context: MakeContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [{"title": "Windows power settings guide", "href": "https://support.example/power", "body": "sleep mode"},
+            {"title": "Embassy of France — current vacancies", "href": "https://fr.example/jobs", "body": "apply now"}]
+    monkeypatch.setattr(web, "_ddgs", lambda query, backend: hits)
+    output = await web.search({"query": "embassy vacancies London"}, make_context(), config=replace(config, search_engine="bing"))
+    assert output["status"] == "results"
+    assert output["results"] == [{"title": "Embassy of France — current vacancies", "url": "https://fr.example/jobs", "snippet": "apply now"}]
+    assert_output("web.search", output)
 
 
 # ── memory.recall ──────────────────────────────────────────────────────
