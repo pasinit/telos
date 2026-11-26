@@ -24,6 +24,41 @@ log = logging.getLogger(__name__)
 FREE_BACKENDS = ("bing", "brave", "duckduckgo", "yahoo")
 MAX_RESULTS = 10
 
+# Query words carrying no topic (ignored when checking relevance).
+_STOPWORDS = frozenset({
+    "a", "about", "an", "and", "any", "are", "as", "at", "be", "best", "by",
+    "for", "from", "how", "in", "into", "is", "it", "its", "latest", "list",
+    "my", "near", "new", "of", "on", "or", "the", "their", "to", "top", "up",
+    "vs", "was", "what", "when", "where", "which", "who", "will", "with",
+    "within", "you", "your",
+})
+_QUERY_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _query_terms(query: str) -> set[str]:
+    """Non-stopword tokens of the query, excluding ``site:`` restriction operands."""
+    cleaned = re.sub(r"(?<![\w:-])-?site:[^\s)]+", " ", query, flags=re.IGNORECASE)
+    return {t for t in _QUERY_TOKEN.findall(cleaned.lower()) if t not in _STOPWORDS}
+
+
+def _topically_relevant(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only results whose title+snippet share at least one query term.
+
+    Conservative by design: it drops a result only when it shares *zero* query
+    terms (the off-topic backend spam seen in production). When the query has no
+    usable terms (e.g. a bare ``site:`` restriction) nothing can be judged, so
+    every result is kept.
+    """
+    terms = _query_terms(query)
+    if not terms:
+        return results
+    kept = []
+    for result in results:
+        text = f"{result.get('title', '')} {result.get('body', '')}".lower()
+        if terms & set(_QUERY_TOKEN.findall(text)):
+            kept.append(result)
+    return kept
+
 
 class SearchUnavailable(RuntimeError):
     pass
@@ -76,7 +111,7 @@ async def _free(query: str, backends: tuple[str, ...]) -> list[dict[str, str]]:
                 failures += 1
                 log.warning("search backend %s unavailable: %s", backend, type(error).__name__)
             continue
-        usable = filter_results(query, raw)
+        usable = _topically_relevant(query, filter_results(query, raw))
         if usable:
             return [_hit(r.get("title"), r.get("href"), r.get("body")) for r in usable]
     if failures == len(backends):
